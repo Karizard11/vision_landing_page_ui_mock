@@ -63,8 +63,12 @@ button{color:inherit}
 .provider-row span,.site-tree-row span,.node-row span{overflow:hidden;text-overflow:ellipsis}.provider-row small,.site-tree-row small,.node-row small{color:#769095;font-size:8px}
 .provider-row:hover,.site-tree-row:hover,.node-row:hover,.provider-row.active,.site-tree-row.active,.node-row.active{background:#d6e1e2;color:#073f47}
 .provider-row.active,.site-tree-row.active,.node-row.active{font-weight:700}
-.site-tree-row .rotated{transform:rotate(90deg)}
-.inverter-node,.inverter-unit{position:relative}
+.site-tree-row .rotated,.node-toggle .rotated{transform:rotate(90deg)}
+.node-parent-row{grid-template-columns:11px minmax(0,1fr);cursor:default}
+.node-toggle{width:16px;height:24px;margin-left:-3px;border:0;background:transparent;color:inherit;display:grid;place-items:center;cursor:pointer}
+.node-toggle-spacer{display:block;width:11px;height:11px}
+.node-link{height:100%;min-width:0;border:0;background:transparent;color:inherit;display:grid;grid-template-columns:13px minmax(0,1fr) auto;align-items:center;gap:5px;padding:0;text-align:left;font:inherit;cursor:pointer}
+.node-toggle:focus-visible,.node-link:focus-visible{outline:1px solid #0a6974;outline-offset:-1px}
 
 .application-main{min-width:0;background:#f1f4f4;overflow:hidden}
 .top-bar{height:40px;display:grid;grid-template-columns:minmax(240px,1fr) minmax(190px,310px) minmax(360px,1fr);align-items:center;gap:14px;padding:0 22px;border-bottom:1px solid #ccd8d9;background:#fff}

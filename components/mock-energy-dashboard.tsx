@@ -18,7 +18,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { isVirtualTotalNode, portfolioSites, portfolioTotals, siteNavigationNodes, type PortfolioNode, type PortfolioSite } from "@/lib/portfolio-data";
+import { isVirtualTotalNode, portfolioSites, portfolioTotals, siteNavigationNodes, type PortfolioNavigationNode, type PortfolioNode, type PortfolioSite } from "@/lib/portfolio-data";
 import { inverterConfiguration, inverterSummary as inverterMetadata, site } from "@/lib/precool-data";
 import { DEFAULT_PRECOOL_DATE, getPrecoolPeriod, type PrecoolDataset, type PrecoolPeriod } from "@/lib/precool-period";
 
@@ -95,6 +95,19 @@ function nodeDepth(node: PortfolioNode, nodes: PortfolioNode[]) {
   return depth;
 }
 
+function navigationNodeIsVisible(siteCode: string, node: PortfolioNavigationNode, nodes: PortfolioNavigationNode[], collapsed: ReadonlySet<string>) {
+  let parentId = node.parentId;
+  const seen = new Set<string>();
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = nodes.find(candidate => candidate.id === parentId);
+    if (!parent) break;
+    if (collapsed.has(`${siteCode}:${parent.navigationKey}`)) return false;
+    parentId = parent.parentId;
+  }
+  return true;
+}
+
 function NodeIcon({ type }: { type: string }) {
   const lower = type.toLowerCase();
   if (lower.includes("solar")) return <SunMedium/>;
@@ -106,9 +119,11 @@ function NodeIcon({ type }: { type: string }) {
 function NavigationSidebar({ view, navigate }: { view: View; navigate: Navigate }) {
   const current = selectedSite(view);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["P0480"]));
+  const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(() => new Set());
   const [query, setQuery] = useState("");
   const visibleSites = portfolioSites.filter(item => !query || `${item.name} ${item.code}`.toLowerCase().includes(query.toLowerCase()));
   function openSite(item: PortfolioSite) { setExpanded(previous => { const next = new Set(previous); if (next.has(item.code) && current.code === item.code) next.delete(item.code); else next.add(item.code); return next; }); navigate({kind:"site",siteCode:item.code}); }
+  function toggleNode(key: string) { setCollapsedNodes(previous => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next; }); }
   return <Sidebar collapsible="icon" className="navigation-sidebar">
     <div className="teal-rail">
       <button className="logo-button" onClick={() => navigate({kind:"portfolio"})}><BrandLogo/></button>
@@ -124,12 +139,19 @@ function NavigationSidebar({ view, navigate }: { view: View; navigate: Navigate 
         {visibleSites.map(item => { const activeSite = view.kind !== "portfolio" && view.siteCode === item.code; const isOpen = expanded.has(item.code) || activeSite; const navigationNodes = siteNavigationNodes(item); return <div className="site-tree" key={item.code}>
           <button className={`site-tree-row ${activeSite ? "active" : ""}`} onClick={() => openSite(item)}><ChevronRight className={isOpen ? "rotated" : ""}/><Building2/><span>{item.name}</span><small>({item.meterCount})</small></button>
           {isOpen && <div className="site-node-list">{navigationNodes.map(node => {
+            const collapseKey = `${item.code}:${node.navigationKey}`;
+            if (!navigationNodeIsVisible(item.code,node,navigationNodes,collapsedNodes)) return null;
             const activeNode = view.kind === "meter" && view.siteCode === item.code && view.nodeId === node.id;
             const branchInverters = item.code !== "P0480" ? [] : node.id === "1140730" ? inverterMetadata.slice(0,6) : node.id === "1140721" ? inverterMetadata.slice(6,12) : [];
+            const hasChildren = navigationNodes.some(candidate => candidate.parentId === node.id) || branchInverters.length > 0 || (item.code === "P0480" && node.id === "1140723");
+            const isExpanded = !collapsedNodes.has(collapseKey);
             return <div className="node-branch" key={`${item.code}-${node.navigationKey}`}>
-              <button style={{paddingLeft:20 + nodeDepth(node,navigationNodes) * 14}} className={`node-row ${activeNode ? "active" : ""}`} onClick={() => navigate({kind:"meter",siteCode:item.code,nodeId:node.id})}><ChevronRight/><NodeIcon type={node.type}/><span>{node.name}</span>{node.meters > 1 && <small>{node.meters}</small>}</button>
-              {item.code === "P0480" && node.id === "1140723" && <button style={{paddingLeft:20 + (nodeDepth(node,navigationNodes)+1) * 14}} className={`node-row inverter-node ${view.kind === "inverters" ? "active" : ""}`} onClick={() => navigate({kind:"inverters",siteCode:"P0480"})}><ChevronRight/><Layers3/><span>Inverter total</span><small>12</small></button>}
-              {branchInverters.map(inv => <button style={{paddingLeft:20 + (nodeDepth(node,navigationNodes)+1) * 14}} key={inv.code} className={`node-row inverter-unit ${view.kind === "inverter" && view.inverterCode === inv.code ? "active" : ""}`} onClick={() => navigate({kind:"inverter",siteCode:"P0480",inverterCode:inv.code})}><ChevronRight/><Gauge/><span>Inverter {inv.code.padStart(3,"0")}</span></button>)}
+              <div style={{paddingLeft:20 + nodeDepth(node,navigationNodes) * 14}} className={`node-row node-parent-row ${activeNode ? "active" : ""}`}>
+                {hasChildren ? <button type="button" className="node-toggle" aria-label={`${isExpanded ? "Collapse" : "Expand"} ${node.name}`} aria-expanded={isExpanded} onClick={() => toggleNode(collapseKey)}><ChevronRight className={isExpanded ? "rotated" : ""}/></button> : <span className="node-toggle-spacer"/>}
+                <button type="button" className="node-link" onClick={() => navigate({kind:"meter",siteCode:item.code,nodeId:node.id})}><NodeIcon type={node.type}/><span>{node.name}</span>{node.meters > 1 && <small>{node.meters}</small>}</button>
+              </div>
+              {isExpanded && item.code === "P0480" && node.id === "1140723" && <button style={{paddingLeft:20 + (nodeDepth(node,navigationNodes)+1) * 14}} className={`node-row inverter-node ${view.kind === "inverters" ? "active" : ""}`} onClick={() => navigate({kind:"inverters",siteCode:"P0480"})}><span className="node-toggle-spacer"/><Layers3/><span>Inverter total</span><small>12</small></button>}
+              {isExpanded && branchInverters.map(inv => <button style={{paddingLeft:20 + (nodeDepth(node,navigationNodes)+1) * 14}} key={inv.code} className={`node-row inverter-unit ${view.kind === "inverter" && view.inverterCode === inv.code ? "active" : ""}`} onClick={() => navigate({kind:"inverter",siteCode:"P0480",inverterCode:inv.code})}><span className="node-toggle-spacer"/><Gauge/><span>Inverter {inv.code.padStart(3,"0")}</span></button>)}
             </div>;
           })}</div>}
         </div>; })}
