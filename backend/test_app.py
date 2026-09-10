@@ -6,6 +6,7 @@ from app import (
     telemetry_series_from_daily,
     telemetry_series_from_raw,
 )
+from contracts import _navigation_nodes, contract_navigation_label
 
 
 class PeriodGranularityTests(TestCase):
@@ -43,6 +44,49 @@ class TelemetryAggregationTests(TestCase):
         self.assertEqual(result[0]["label"], "Aug 2026")
         self.assertEqual(result[0]["channels"][0]["current"], 15)
         self.assertEqual(result[0]["channels"][0]["power"], 1.5)
+
+
+class ContractCatalogTests(TestCase):
+    def test_contract_navigation_label_omits_phase_one(self):
+        row = {"project_code": "P0428", "site_name": "Norwood Mall", "contract_phase": "1"}
+        self.assertEqual(contract_navigation_label(row), "P0428 | Norwood Mall")
+
+    def test_contract_navigation_label_keeps_later_phase(self):
+        row = {"project_code": "P0533", "site_name": "SPAR DC", "contract_phase": "2"}
+        self.assertEqual(contract_navigation_label(row), "P0533 | SPAR DC | Phase 2")
+
+    def test_navigation_has_contract_totals_and_sld_parentage(self):
+        contract = {
+            "contract_id": 3,
+            "site_id": 4,
+            "solar_total_device_node_id": 100,
+            "municipal_total_device_node_id": 200,
+        }
+        rows = [
+            {
+                "site_id": 4, "sld_id": 1, "sld_node_id": 10,
+                "device_node_id": 201, "parent_sld_node_id": None,
+                "parent_device_node_id": None,
+                "device_node_name": "Incomer 1", "device_node_type": "Transformer",
+                "meter_serial": "GRID", "device_node_calc_mode": "GROSS_METERING",
+            },
+            {
+                "site_id": 4, "sld_id": 1, "sld_node_id": 11,
+                "device_node_id": 101, "parent_sld_node_id": 10,
+                "parent_device_node_id": 201,
+                "device_node_name": "PVDB 1", "device_node_type": "Solar",
+                "meter_serial": "SOLAR", "device_node_calc_mode": "GROSS_METERING",
+            },
+        ]
+        nodes = _navigation_nodes(
+            contract,
+            rows,
+            {"solar": ["SOLAR"], "municipal": ["GRID"], "load": []},
+        )
+        by_key = {node["navigationKey"]: node for node in nodes}
+        self.assertEqual(by_key["municipal-total"]["parentNavigationKey"], "site-total")
+        self.assertEqual(by_key["base-101"]["parentNavigationKey"], "base-201")
+        self.assertEqual(by_key["solar-101"]["parentNavigationKey"], "solar-total")
 
 
 if __name__ == "__main__":

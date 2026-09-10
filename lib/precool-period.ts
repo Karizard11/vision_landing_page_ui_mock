@@ -16,6 +16,7 @@ export type PrecoolPowerPoint = {
   ghi: number;
   sensorGhi: number | null;
   expected: number;
+  [key: string]: string | number | null;
 };
 
 export type PrecoolMeterSnapshot = {
@@ -86,6 +87,13 @@ export type PrecoolDay = {
 };
 
 export type PrecoolDataset = {
+  site?: {
+    contractId: string;
+    projectCode: string;
+    capacityKwp: number;
+    meterKeys: string[];
+    inverterCount: number;
+  };
   range: {
     from: string;
     to: string;
@@ -120,7 +128,7 @@ export type PrecoolPeriod = {
   source: PrecoolDataset["range"];
 };
 
-const meterKeys = ["pvdb1", "pvdb2", "incomer1", "incomer2", "incomer3"];
+const precoolMeterKeys = ["pvdb1", "pvdb2", "incomer1", "incomer2", "incomer3"];
 const numberValue = (value: number | null | undefined) => Number.isFinite(value) ? Number(value) : 0;
 
 function dayLabel(key: string) {
@@ -137,33 +145,28 @@ function summaryLabel(key: string, granularity: "month" | "year") {
     .format(new Date(`${key}-01T00:00:00Z`));
 }
 
-type PowerField = "pvdb1" | "pvdb2" | "incomer1" | "incomer2" | "incomer3" | "solar" | "grid" | "ghi" | "expected";
-
 function intervalLabel(key: string, time: string, dayCount: number) {
   return dayCount === 1 ? time : `${dayLabel(key)} ${time}`;
 }
 
-function averageRows(rows: PrecoolPowerPoint[], key: PowerField) {
-  return rows.reduce((sum,row) => sum + numberValue(row[key]),0) / rows.length;
+function averageRows(rows: PrecoolPowerPoint[], key: string) {
+  return rows.reduce((sum,row) => sum + numberValue(typeof row[key] === "number" ? row[key] : 0),0) / rows.length;
 }
 
 function resamplePower(
   selected: Array<[string,PrecoolDay]>,
   granularity: PeriodGranularity,
   sourceIntervalMinutes: number,
-) {
+): PrecoolPowerPoint[] {
   const dayCount = selected.length;
   if (granularity === "day" || granularity === "month" || granularity === "year") {
-    const daily = selected.map(([key,day]) => {
-    const irradiation = day.power.reduce((sum,row) => sum + row.ghi * sourceIntervalMinutes / 60 / 1000,0);
+    const daily: Array<Record<string,string|number|null>> = selected.map(([key,day]) => {
+    const irradiation = day.power.reduce((sum,row) => sum + numberValue(row.ghi) * sourceIntervalMinutes / 60 / 1000,0);
+    const meterEnergy = Object.fromEntries(Object.entries(day.meters).map(([meterKey,meter]) => [meterKey,meter.energyMwh]));
     return {
+      ...meterEnergy,
       date:key,
       time:dayLabel(key),
-      pvdb1:day.meters.pvdb1.energyMwh,
-      pvdb2:day.meters.pvdb2.energyMwh,
-      incomer1:day.meters.incomer1.energyMwh,
-      incomer2:day.meters.incomer2.energyMwh,
-      incomer3:day.meters.incomer3.energyMwh,
       solar:day.totals.solarEnergyMwh,
       grid:day.totals.gridImportMwh,
       inverter:day.totals.inverterReadings ? day.totals.inverterEnergyMwh : null,
@@ -172,28 +175,22 @@ function resamplePower(
       expected:irradiation*1851.33*0.78/1000,
     };
     });
-    if (granularity === "day") return daily;
+    if (granularity === "day") return daily as unknown as PrecoolPowerPoint[];
     const grouped = new Map<string,typeof daily>();
     daily.forEach(point => {
-      const key = summaryKey(point.date,granularity);
+      const key = summaryKey(String(point["date"]),granularity);
       grouped.set(key,[...(grouped.get(key) ?? []),point]);
     });
-    return [...grouped.entries()].map(([key,points]) => ({
-      time:summaryLabel(key,granularity),
-      pvdb1:points.reduce((sum,point) => sum+point.pvdb1,0),
-      pvdb2:points.reduce((sum,point) => sum+point.pvdb2,0),
-      incomer1:points.reduce((sum,point) => sum+point.incomer1,0),
-      incomer2:points.reduce((sum,point) => sum+point.incomer2,0),
-      incomer3:points.reduce((sum,point) => sum+point.incomer3,0),
-      solar:points.reduce((sum,point) => sum+point.solar,0),
-      grid:points.reduce((sum,point) => sum+point.grid,0),
-      inverter:points.some(point => point.inverter !== null)
-        ? points.reduce((sum,point) => sum+numberValue(point.inverter),0)
-        : null,
-      ghi:points.reduce((sum,point) => sum+point.ghi,0),
-      sensorGhi:null,
-      expected:points.reduce((sum,point) => sum+point.expected,0),
-    }));
+    return [...grouped.entries()].map(([key,points]) => {
+      const result: Record<string,string|number|null> = {time:summaryLabel(key,granularity)};
+      const numericKeys = new Set(points.flatMap(point => Object.keys(point).filter(value => value !== "time" && value !== "date" && value !== "sensorGhi")));
+      numericKeys.forEach(value => {
+        if (value === "inverter" && points.every(point => point["inverter"] === null)) result[value] = null;
+        else result[value] = points.reduce((sum,point) => sum + numberValue(typeof point[value] === "number" ? point[value] : 0),0);
+      });
+      result.sensorGhi = null;
+      return result as PrecoolPowerPoint;
+    });
   }
 
   const targetMinutes = periodBucketMinutes(granularity) ?? sourceIntervalMinutes;
@@ -205,20 +202,12 @@ function resamplePower(
       if (!rows.length) continue;
       const inverterValues = rows.map(row => row.inverter).filter((value): value is number => typeof value === "number");
       const sensorValues = rows.map(row => row.sensorGhi).filter((value): value is number => typeof value === "number");
-      buckets.push({
-        time:intervalLabel(key,rows[0].time,dayCount),
-        pvdb1:averageRows(rows,"pvdb1"),
-        pvdb2:averageRows(rows,"pvdb2"),
-        incomer1:averageRows(rows,"incomer1"),
-        incomer2:averageRows(rows,"incomer2"),
-        incomer3:averageRows(rows,"incomer3"),
-        solar:averageRows(rows,"solar"),
-        grid:averageRows(rows,"grid"),
-        inverter:inverterValues.length ? inverterValues.reduce((sum,value) => sum+value,0)/inverterValues.length : null,
-        ghi:averageRows(rows,"ghi"),
-        sensorGhi:sensorValues.length ? sensorValues.reduce((sum,value) => sum+value,0)/sensorValues.length : null,
-        expected:averageRows(rows,"expected"),
-      });
+      const result: Record<string,string|number|null> = {time:intervalLabel(key,String(rows[0].time),dayCount)};
+      const numericKeys = new Set(rows.flatMap(row => Object.keys(row).filter(value => value !== "time" && value !== "inverter" && value !== "sensorGhi")));
+      numericKeys.forEach(value => { result[value] = averageRows(rows,value); });
+      result.inverter = inverterValues.length ? inverterValues.reduce((sum,value) => sum+value,0)/inverterValues.length : null;
+      result.sensorGhi = sensorValues.length ? sensorValues.reduce((sum,value) => sum+value,0)/sensorValues.length : null;
+      buckets.push(result as PrecoolPowerPoint);
     }
     return buckets;
   });
@@ -243,13 +232,14 @@ function resampleInverters(
     });
     return [...grouped.entries()].map(([key,entries]) => {
       const row: Record<string,string|number> = {time:summaryLabel(key,granularity)};
-      inverterMetadata.forEach(metadata => {
+      const codes = new Set(entries.flatMap(([,day]) => day.inverterSummary.map(item => item.code)));
+      codes.forEach(code => {
         const readings = entries.flatMap(([,day]) =>
           day.inverterSummary
-            .filter(item => item.code === metadata.code)
+            .filter(item => item.code === code)
             .map(item => numberValue(item[summaryField]))
         );
-        if (readings.length) row[`i${metadata.code}`] = Math.max(...readings);
+        if (readings.length) row[`i${code}`] = Math.max(...readings);
       });
       return row;
     });
@@ -288,10 +278,12 @@ export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string)
   const gridExportKwh = selectedDays.reduce((sum,day) => sum + day.totals.gridExportKwh,0);
   const inverterEnergyMwh = selectedDays.reduce((sum,day) => sum + day.totals.inverterEnergyMwh,0);
   const irradiationKwhM2 = selectedDays.reduce((sum,day) => sum + day.power.reduce((subtotal,row) => subtotal + row.ghi*sourceIntervalMinutes/60/1000,0),0);
-  const prEstimate = irradiationKwhM2 ? solarEnergyMwh*1000/(1851.33*irradiationKwhM2)*100 : 0;
+  const capacityKwp = data.site?.capacityKwp ?? 1851.33;
+  const prEstimate = irradiationKwhM2 && capacityKwp ? solarEnergyMwh*1000/(capacityKwp*irradiationKwhM2)*100 : 0;
   const lastCumulative = [...selectedDays].reverse().map(day => day.totals.cumulativeEnergyGwh).find(value => value !== null) ?? null;
   const inverterReadings = selectedDays.reduce((sum,day) => sum + day.totals.inverterReadings,0);
 
+  const meterKeys = data.site?.meterKeys ?? precoolMeterKeys;
   const meters = Object.fromEntries(meterKeys.map(key => {
     const snapshots = selectedDays.map(day => day.meters[key]).filter(Boolean);
     return [key,{
@@ -303,7 +295,11 @@ export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string)
 
   const power = resamplePower(selected,granularity,sourceIntervalMinutes);
 
-  const inverterSummary = inverterMetadata.map(metadata => {
+  const observedInverters = new Map(selectedDays.flatMap(day => day.inverterSummary).map(item => [item.code,item]));
+  const inverterList = data.site?.projectCode === "P0480"
+    ? inverterMetadata.map(metadata => observedInverters.get(metadata.code) ?? metadata)
+    : [...observedInverters.values()].sort((left,right) => left.code.localeCompare(right.code,undefined,{numeric:true}));
+  const inverterSummary = inverterList.map(metadata => {
     const snapshots = selectedDays.map(day => day.inverterSummary.find(item => item.code === metadata.code)).filter((item): item is PrecoolInverterSnapshot => Boolean(item));
     const last = snapshots.at(-1);
     const readings = snapshots.reduce((sum,item) => sum + item.readings,0);
@@ -348,14 +344,14 @@ export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string)
       gridImportMwh,
       gridExportKwh,
       estimatedLoadMwh:gridImportMwh+solarEnergyMwh-gridExportKwh/1000,
-      avoidedCostZar:solarEnergyMwh*1000*0.88,
+      avoidedCostZar:selectedDays.reduce((sum,day) => sum + day.totals.avoidedCostZar,0),
       cumulativeEnergyGwh:lastCumulative,
       peakAcMw:Math.max(0,...selectedDays.map(day => day.totals.peakAcMw)),
       peakSolarKw:Math.max(0,...selectedDays.map(day => day.totals.peakSolarKw)),
       solcastPeakGhi:Math.max(0,...selectedDays.map(day => day.totals.solcastPeakGhi)),
       prEstimate,
       meterAvailability:dayCount ? selectedDays.reduce((sum,day) => sum + day.totals.meterAvailability,0)/dayCount : 0,
-      inverterAvailability:dayCount ? inverterReadings/(dayCount*288*12)*100 : 0,
+      inverterAvailability:dayCount && inverterList.length ? inverterReadings/(dayCount*288*inverterList.length)*100 : 0,
       inverterReadings,
     },
     meters,

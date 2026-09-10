@@ -1,12 +1,22 @@
 export type PortfolioNode = {
   id: string;
   parentId?: string;
+  navigationKey?: string;
+  parentNavigationKey?: string;
   name: string;
   type: string;
   meters: number;
+  seriesKey?: string;
+  meterSerials?: string[];
+  isPhysical?: boolean;
 };
 
 export type PortfolioSite = {
+  contractId?: string;
+  siteId?: string;
+  phaseNumber?: string;
+  providerName?: string;
+  displayName?: string;
   code: string;
   name: string;
   city: string;
@@ -25,12 +35,25 @@ const n = (id: string, parentId: string | undefined, name: string, type: string,
 
 export type PortfolioNavigationNode = PortfolioNode & { navigationKey: string };
 
+export function contractSiteLabel(item: Pick<PortfolioSite,"code"|"name"|"phaseNumber">) {
+  const phase = String(item.phaseNumber ?? "").trim();
+  const hasLaterPhase = phase !== "" && phase !== "1" && phase !== "1.0";
+  return `${item.code} | ${item.name}${hasLaterPhase ? ` | Phase ${phase}` : ""}`;
+}
+
 export function isVirtualTotalNode(node: PortfolioNode) {
   const type = node.type.toLowerCase();
   return type === "site total" || type === "solar total" || type === "municipal total";
 }
 
 export function siteNavigationNodes(item: PortfolioSite): PortfolioNavigationNode[] {
+  if (item.nodes.some(node => node.navigationKey)) {
+    return item.nodes.map((node,index) => ({
+      ...node,
+      navigationKey:node.navigationKey ?? `${node.id}-${index}`,
+      parentId:node.parentNavigationKey ?? node.parentId,
+    }));
+  }
   if (item.code !== "P0480") return item.nodes.map((node,index) => ({...node,navigationKey:`${node.id}-${index}`}));
   const nodes = new Map(item.nodes.map(node => [node.id,node]));
   const branch = (id: string, parentId: string | undefined, navigationKey: string): PortfolioNavigationNode => ({...nodes.get(id)!,parentId,navigationKey});

@@ -12,6 +12,12 @@ import pymysql
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
+from contracts import (
+    aggregate_contract_payload,
+    query_contract_catalog,
+    query_contract_source,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = os.getenv("PRECOOL_DORIS_ENV_FILE")
@@ -979,6 +985,52 @@ def health():
     except Exception:
         app.logger.exception("Doris health check failed")
         return jsonify({"status": "unavailable"}), 503
+
+
+@app.get("/api/contracts")
+def contracts():
+    try:
+        with doris_connection() as connection:
+            sites = query_contract_catalog(connection)
+        response = jsonify({"provider": "Terradew Four", "sites": sites})
+        response.headers["Cache-Control"] = "private, max-age=300"
+        return response
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 503
+    except Exception:
+        app.logger.exception("Terradew Four contract catalog query failed")
+        return jsonify({"error": "Unable to query the contract catalog from Doris."}), 500
+
+
+@app.get("/api/site")
+def contract_site():
+    try:
+        start_day, end_day, start, end = parse_range()
+        contract_id = request.args.get("contract_id", "")
+        if not re.fullmatch(r"\d+", contract_id):
+            raise ValueError("contract_id must be numeric")
+        with doris_connection() as connection:
+            sites = query_contract_catalog(connection)
+            site = next((item for item in sites if item["contractId"] == contract_id), None)
+            if not site:
+                raise ValueError("contract_id is not a Terradew Four solar contract")
+            source = query_contract_source(
+                connection,
+                site,
+                start,
+                end,
+                daily=(end_day - start_day).days + 1 > 14,
+            )
+        response = jsonify(aggregate_contract_payload(site, start_day, end_day, source))
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 503
+    except Exception:
+        app.logger.exception("Contract site Doris query failed")
+        return jsonify({"error": "Unable to query site data from Doris."}), 500
 
 
 @app.get("/api/precool")
