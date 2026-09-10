@@ -2,6 +2,8 @@
 @import "tw-animate-css";
 @import "../vendor/shadcn-tailwind-4.13.0.css";
 
+.telemetry-tabs .string-config-card{min-height:82px!important}
+
 :root{
   --background:#f2f5f5;--foreground:#093f47;--card:#fff;--card-foreground:#093f47;
   --popover:#fff;--popover-foreground:#093f47;--primary:#064a53;--primary-foreground:#fff;
