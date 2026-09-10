@@ -36,6 +36,7 @@ html,body{height:100%}
 body{margin:0;background:#dcdede;color:#0b4149;font-family:Arial,"Helvetica Neue",sans-serif;font-size:13px;overflow:hidden}
 button,input{font:inherit}
 button{color:inherit}
+.recharts-legend-item{cursor:pointer;user-select:none}
 
 [data-slot="sidebar-wrapper"]{height:100vh;width:100%;max-width:none;margin:0;background:#f1f4f4;overflow:hidden;box-shadow:0 0 0 1px #d7dddd}
 .navigation-sidebar [data-slot="sidebar-container"]{border-right:1px solid #cbd8d9}

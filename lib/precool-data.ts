@@ -124,7 +124,7 @@ export const inverterStringTelemetry: Record<string, { medianCurrent: number; ca
   "12": { medianCurrent:8.308, capturedAt:"2026-08-22T09:45:00", strings:[{channel:1,current:16.396,voltage:718.472,power:11.78,deviation:97.4},{channel:2,current:16.382,voltage:723.692,power:11.856,deviation:97.2},{channel:3,current:8.348,voltage:716.222,power:5.979,deviation:0.5},{channel:4,current:8.256,voltage:717.006,power:5.92,deviation:-0.6},{channel:5,current:8.268,voltage:719.026,power:5.945,deviation:-0.5},{channel:6,current:8.2,voltage:722.538,power:5.925,deviation:-1.3},{channel:7,current:8.432,voltage:734.326,power:6.192,deviation:1.5},{channel:8,current:8.102,voltage:622.468,power:5.043,deviation:-2.5},{channel:9,current:8.246,voltage:625.274,power:5.156,deviation:-0.7},{channel:10,current:7.928,voltage:652.414,power:5.172,deviation:-4.6},{channel:11,current:9.91,voltage:567.796,power:5.627,deviation:19.3},{channel:12,current:9.74,voltage:583.118,power:5.68,deviation:17.2}] },
 };
 
-export const stringData = inverterStringTelemetry["01"].strings;
+export const stringData = inverterStringTelemetry["01"]?.strings ?? [];
 
 export type MpptTelemetry = StringTelemetry;
 export const inverterMpptTelemetry = inverterStringTelemetry;
