@@ -4,10 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Activity, AlertTriangle, ArrowUpRight, BatteryCharging, Bell, Building2,
-  CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleGauge, Database,
+  CalendarDays, Check, ChevronDown, ChevronRight, CircleGauge, Database,
   Gauge, Home, Info, Layers3, Network, Search, SunMedium, Users, Zap,
 } from "lucide-react";
-import { addDays, differenceInCalendarDays, endOfMonth, format, startOfMonth, subMonths } from "date-fns";
+import { addDays, endOfMonth, format, startOfMonth, startOfYear, subMonths } from "date-fns";
 import type { DateRange } from "react-day-picker";
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, ComposedChart, Legend,
@@ -33,8 +33,6 @@ type Navigate = (view: View) => void;
 
 const anchorDate = new Date(`${DEFAULT_PRECOOL_DATE}T00:00:00`);
 const today = new Date();
-const augustStart = new Date("2026-08-01T00:00:00");
-const augustEnd = new Date("2026-08-31T00:00:00");
 const chartMargin = { top: 8, right: 12, left: -20, bottom: 0 };
 const inverterColours = ["#0c5a63","#14717b","#23848c","#3f969b","#63aaab","#86bbbb","#f1b14b","#ed9b43","#ec8446","#ed6a4e","#d85448","#a94545"];
 const monthPlan = (siteItem: PortfolioSite) => ["Mar","Apr","May","Jun","Jul","Aug"].map((month, index) => ({ month, plan: Math.round(siteItem.annualYieldKwh / 12 / 1000), actual: index === 5 && siteItem.code === "P0480" ? 203 : Math.round(siteItem.annualYieldKwh / 12 / 1000 * (.91 + index * .012)) }));
@@ -62,34 +60,29 @@ function p0480MeterId(nodeId: string) {
 function DateSelector({ range, onChange }: { range: DateRange; onChange: (range: DateRange) => void }) {
   const [draft, setDraft] = useState<DateRange | undefined>(range);
   const [open, setOpen] = useState(false);
-  const label = !range?.from ? "Select date" : range.to && +range.to !== +range.from ? `${format(range.from,"dd MMM yyyy")} - ${format(range.to,"dd MMM yyyy")}` : format(range.from,"dd MMM yyyy");
+  const label = range.from
+    ? `${format(range.from,"MMM dd, yyyy")} [00:00] - ${format(range.to ?? range.from,"MMM dd, yyyy")} [23:59]`
+    : "Select date range";
+  const yesterday = addDays(today,-1);
   const previousMonth = subMonths(startOfMonth(today),1);
   const presets: [string, Date, Date][] = [
     ["Today", today, today],
-    ["Yesterday", addDays(today,-1), addDays(today,-1)],
+    ["Yesterday", yesterday, yesterday],
+    ["Since Yesterday", yesterday, today],
     ["Last 7 days", addDays(today,-6), today],
-    ["Last 14 days", addDays(today,-13), today],
     ["Last 30 days", addDays(today,-29), today],
-    ["This month", startOfMonth(today), today],
-    ["Last month", previousMonth, endOfMonth(previousMonth)],
-    ["August 2026", augustStart, augustEnd],
+    ["This Month", startOfMonth(today), today],
+    ["Last Month", previousMonth, endOfMonth(previousMonth)],
+    ["Year to date", startOfYear(today), today],
+    ["Twelve Months", startOfMonth(subMonths(today,12)), today],
   ];
-  const span = range.from ? differenceInCalendarDays(range.to ?? range.from,range.from) : 0;
-  const shift = (direction: -1|1) => {
-    if (!range.from) return;
-    const from = addDays(range.from,direction*(span+1));
-    const to = addDays(range.to ?? range.from,direction*(span+1));
-    if (to > today) return;
-    onChange({from,to});
-  };
-  const canNext = Boolean(range.to && addDays(range.to,span+1) <= today);
-  return <div className="date-navigation"><button onClick={() => shift(-1)} aria-label="Previous period"><ChevronLeft/></button><Popover open={open} onOpenChange={value => { setOpen(value); if (value) setDraft(range); }}>
-    <PopoverTrigger asChild><Button variant="outline" className="date-button"><CalendarDays/><span className="date-button-label">{label}</span><ChevronDown/></Button></PopoverTrigger>
-    <PopoverContent align="end" className="date-picker"><div className="date-picker-title">Date</div><div className="date-picker-layout">
-      <Calendar mode="range" numberOfMonths={2} selected={draft} onSelect={setDraft} defaultMonth={draft?.from ?? anchorDate} disabled={{after:today}}/>
+  return <div className="date-navigation"><Popover open={open} onOpenChange={value => { setOpen(value); if (value) setDraft(range); }}>
+    <PopoverTrigger asChild><Button variant="outline" className="date-button" aria-label={`Date range: ${label}`}><CalendarDays/><span className="date-button-label">{label}</span></Button></PopoverTrigger>
+    <PopoverContent align="end" className="date-picker"><div className="date-picker-layout">
+      <Calendar mode="range" numberOfMonths={2} selected={draft} onSelect={setDraft} defaultMonth={subMonths(startOfMonth(draft?.from ?? anchorDate),1)} disabled={{after:today}}/>
       <div className="date-preset-list">{presets.map(([text,from,to]) => <button key={text} onClick={() => setDraft({from,to})}>{text}</button>)}</div>
-    </div><div className="date-picker-actions"><button className="apply" onClick={() => { if (draft?.from) onChange({from:draft.from,to:draft.to ?? draft.from}); setOpen(false); }}>Apply</button><button onClick={() => setDraft({from:anchorDate,to:anchorDate})}>Reset</button><span>1d 5 min · 2–4d 30 min · 5–14d hourly · 15–31d daily · 32d–1y monthly · over 1y yearly</span></div></PopoverContent>
-  </Popover><button onClick={() => shift(1)} disabled={!canNext} aria-label="Next period"><ChevronRight/></button></div>;
+    </div><div className="date-picker-actions"><button className="apply" disabled={!draft?.from} onClick={() => { if (draft?.from) onChange({from:draft.from,to:draft.to ?? draft.from}); setOpen(false); }}>Apply</button><button onClick={() => setDraft(undefined)}>Clear</button></div></PopoverContent>
+  </Popover></div>;
 }
 
 function BrandLogo() {
