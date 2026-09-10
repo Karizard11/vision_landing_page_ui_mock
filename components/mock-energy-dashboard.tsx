@@ -7,7 +7,7 @@ import {
   CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleGauge, Database,
   Gauge, Home, Info, Layers3, Network, Search, SunMedium, Users, Zap,
 } from "lucide-react";
-import { addDays, differenceInCalendarDays, format } from "date-fns";
+import { addDays, differenceInCalendarDays, endOfMonth, format, startOfMonth, subMonths } from "date-fns";
 import type { DateRange } from "react-day-picker";
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, ComposedChart, Legend,
@@ -20,7 +20,7 @@ import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger } from "@/compon
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { portfolioSites, portfolioTotals, type PortfolioNode, type PortfolioSite } from "@/lib/portfolio-data";
 import { inverterConfiguration, inverterSummary as inverterMetadata, meters, site } from "@/lib/precool-data";
-import { AUGUST_END, AUGUST_START, getPrecoolPeriod, LATEST_COMPLETE_INVERTER_DAY, type PrecoolPeriod } from "@/lib/precool-period";
+import { DEFAULT_PRECOOL_DATE, getPrecoolPeriod, type PrecoolDataset, type PrecoolPeriod } from "@/lib/precool-period";
 
 type View =
   | { kind: "portfolio" }
@@ -30,9 +30,10 @@ type View =
   | { kind: "inverter"; siteCode: "P0480"; inverterCode: string };
 type Navigate = (view: View) => void;
 
-const anchorDate = new Date(`${LATEST_COMPLETE_INVERTER_DAY}T00:00:00`);
-const augustStart = new Date(`${AUGUST_START}T00:00:00`);
-const augustEnd = new Date(`${AUGUST_END}T00:00:00`);
+const anchorDate = new Date(`${DEFAULT_PRECOOL_DATE}T00:00:00`);
+const today = new Date();
+const augustStart = new Date("2026-08-01T00:00:00");
+const augustEnd = new Date("2026-08-31T00:00:00");
 const chartMargin = { top: 8, right: 12, left: -20, bottom: 0 };
 const inverterColours = ["#0c5a63","#14717b","#23848c","#3f969b","#63aaab","#86bbbb","#f1b14b","#ed9b43","#ec8446","#ed6a4e","#d85448","#a94545"];
 const monthPlan = (siteItem: PortfolioSite) => ["Mar","Apr","May","Jun","Jul","Aug"].map((month, index) => ({ month, plan: Math.round(siteItem.annualYieldKwh / 12 / 1000), actual: index === 5 && siteItem.code === "P0480" ? 203 : Math.round(siteItem.annualYieldKwh / 12 / 1000 * (.91 + index * .012)) }));
@@ -54,29 +55,31 @@ function DateSelector({ range, onChange }: { range: DateRange; onChange: (range:
   const [draft, setDraft] = useState<DateRange | undefined>(range);
   const [open, setOpen] = useState(false);
   const label = !range?.from ? "Select date" : range.to && +range.to !== +range.from ? `${format(range.from,"dd MMM yyyy")} - ${format(range.to,"dd MMM yyyy")}` : format(range.from,"dd MMM yyyy");
+  const previousMonth = subMonths(startOfMonth(today),1);
   const presets: [string, Date, Date][] = [
-    ["Latest complete day", anchorDate, anchorDate],
-    ["Previous day", addDays(anchorDate,-1), addDays(anchorDate,-1)],
-    ["Last 7 complete days", addDays(anchorDate,-6), anchorDate],
-    ["August to complete day", augustStart, anchorDate],
-    ["Full August 2026", augustStart, augustEnd],
+    ["Today", today, today],
+    ["Yesterday", addDays(today,-1), addDays(today,-1)],
+    ["Last 7 days", addDays(today,-6), today],
+    ["Last 30 days", addDays(today,-29), today],
+    ["This month", startOfMonth(today), today],
+    ["Last month", previousMonth, endOfMonth(previousMonth)],
+    ["August 2026", augustStart, augustEnd],
   ];
   const span = range.from ? differenceInCalendarDays(range.to ?? range.from,range.from) : 0;
   const shift = (direction: -1|1) => {
     if (!range.from) return;
     const from = addDays(range.from,direction*(span+1));
     const to = addDays(range.to ?? range.from,direction*(span+1));
-    if (from < augustStart || to > augustEnd) return;
+    if (to > today) return;
     onChange({from,to});
   };
-  const canPrevious = Boolean(range.from && addDays(range.from,-(span+1)) >= augustStart);
-  const canNext = Boolean(range.to && addDays(range.to,span+1) <= augustEnd);
-  return <div className="date-navigation"><button onClick={() => shift(-1)} disabled={!canPrevious} aria-label="Previous period"><ChevronLeft/></button><Popover open={open} onOpenChange={value => { setOpen(value); if (value) setDraft(range); }}>
+  const canNext = Boolean(range.to && addDays(range.to,span+1) <= today);
+  return <div className="date-navigation"><button onClick={() => shift(-1)} aria-label="Previous period"><ChevronLeft/></button><Popover open={open} onOpenChange={value => { setOpen(value); if (value) setDraft(range); }}>
     <PopoverTrigger asChild><Button variant="outline" className="date-button"><CalendarDays/><span>{label}</span><ChevronDown/></Button></PopoverTrigger>
     <PopoverContent align="end" className="date-picker"><div className="date-picker-title">Date</div><div className="date-picker-layout">
-      <Calendar mode="range" numberOfMonths={2} selected={draft} onSelect={setDraft} defaultMonth={draft?.from ?? augustStart} disabled={[{before:augustStart},{after:augustEnd}]}/>
+      <Calendar mode="range" numberOfMonths={2} max={31} selected={draft} onSelect={setDraft} defaultMonth={draft?.from ?? anchorDate} disabled={{after:today}}/>
       <div className="date-preset-list">{presets.map(([text,from,to]) => <button key={text} onClick={() => setDraft({from,to})}>{text}</button>)}</div>
-    </div><div className="date-picker-actions"><button className="apply" onClick={() => { if (draft?.from) onChange({from:draft.from,to:draft.to ?? draft.from}); setOpen(false); }}>Apply</button><button onClick={() => setDraft({from:anchorDate,to:anchorDate})}>Reset</button><span>Meter data: 01–31 Aug · complete inverter data: 01–22 Aug</span></div></PopoverContent>
+    </div><div className="date-picker-actions"><button className="apply" onClick={() => { if (draft?.from) onChange({from:draft.from,to:draft.to ?? draft.from}); setOpen(false); }}>Apply</button><button onClick={() => setDraft({from:anchorDate,to:anchorDate})}>Reset</button><span>Up to 31 days · queried live from Doris</span></div></PopoverContent>
   </Popover><button onClick={() => shift(1)} disabled={!canNext} aria-label="Next period"><ChevronRight/></button></div>;
 }
 
@@ -171,13 +174,20 @@ function selectedPeriodLabel(period: PrecoolPeriod) {
 }
 
 function CoverageNotice({ period }: { period: PrecoolPeriod }) {
-  if (period.inverterCoverage === "complete") return <div className="coverage-notice complete"><Check/>Meter, Solcast and all 12 inverter feeds are complete for {selectedPeriodLabel(period)}.</div>;
+  const meterCoverage = period.totals.meterAvailability;
+  if (meterCoverage === 0 && period.totals.inverterReadings === 0) return <div className="coverage-notice warning"><AlertTriangle/>No PreCool meter or inverter readings were returned from Doris for {selectedPeriodLabel(period)}.</div>;
+  if (period.inverterCoverage === "complete" && meterCoverage >= 99.9) return <div className="coverage-notice complete"><Check/>Live Doris meter, Solcast and all 12 inverter feeds are complete for {selectedPeriodLabel(period)}.</div>;
+  const partialDay = period.source.partialInverterDay ? format(new Date(`${period.source.partialInverterDay}T00:00:00`),"dd MMM yyyy") : null;
   const copy = period.inverterCoverage === "partial"
-    ? "Inverter data is partial on 23 Aug (through 08:30); meter and Solcast data are complete."
+    ? `VCOM inverter data is partial${partialDay ? ` on ${partialDay}` : ""}${period.source.partialInverterThrough ? ` through ${period.source.partialInverterThrough}` : ""}; meter coverage is ${num(meterCoverage,1)}%.`
     : period.inverterCoverage === "unavailable"
-      ? "Meter and Solcast data are complete; VCOM inverter telemetry is unavailable for this selection."
-      : "Meter and Solcast data are complete; inverter coverage is mixed because VCOM data ends during 23 Aug.";
+      ? `VCOM inverter telemetry is unavailable for this selection; meter coverage is ${num(meterCoverage,1)}%.`
+      : `Live inverter coverage is mixed across this range; meter coverage is ${num(meterCoverage,1)}%.`;
   return <div className="coverage-notice warning"><AlertTriangle/>{copy}</div>;
+}
+
+function LiveDataState({ error, onRetry }: { error?: string; onRetry?: () => void }) {
+  return <div className={`live-data-state ${error ? "error" : "loading"}`}><Database/><strong>{error ? "Unable to load Doris data" : "Loading live PreCool data"}</strong><span>{error ?? "Querying meters, inverters, MPPT channels and irradiance for the selected dates."}</span>{error && <button onClick={onRetry}>Retry</button>}</div>;
 }
 
 function PortfolioCard({ item, navigate }: { item: PortfolioSite; navigate: Navigate }) {
@@ -187,7 +197,8 @@ function PortfolioCard({ item, navigate }: { item: PortfolioSite; navigate: Navi
 
 function PortfolioView({ navigate, period }: { navigate: Navigate; period: PrecoolPeriod }) {
   const chartUnit = period.granularity === "hour" ? "kW" : "MWh/day";
-  return <><PageTitle title="Terradew Four" subtitle={`${portfolioTotals.sites} sites | ${portfolioTotals.meters} meters | Last updated ${site.lastDorisRefresh}`} action={false}/>
+  const dataAsOf = period.source.dataAsOf ? format(new Date(period.source.dataAsOf),"dd MMM yyyy HH:mm") : "no readings in selection";
+  return <><PageTitle title="Terradew Four" subtitle={`${portfolioTotals.sites} sites | ${portfolioTotals.meters} meters | Doris as of ${dataAsOf}`} action={false}/>
     <div className="kpi-grid portfolio-kpis"><Kpi icon={SunMedium} label="PreCool solar" value={num(period.totals.solarEnergyMwh,3)} unit="MWh" note={selectedPeriodLabel(period)} delta="metered" tone="green"/><Kpi icon={Database} label="PreCool solar value" value={`R ${num(period.totals.avoidedCostZar,0)}`} note={`Energy at R ${num(site.tariff,2)}/kWh`}/><Kpi icon={Gauge} label="PreCool grid export" value={num(period.totals.gridExportKwh,1)} unit="kWh" note="Measured incomer register delta" delta="measured" tone="green"/><Kpi icon={Activity} label="PreCool meter availability" value={num(period.totals.meterAvailability,1)} unit="%" note="Five SLD meters" delta="online" tone="green"/></div>
     <div className="portfolio-overview"><article className="panel exposure"><div className="panel-head"><strong>Exposure</strong><span>portfolio</span></div><div><Check/><span>Sites with active VCOM systems</span><b>23 of 23</b></div><div><AlertTriangle/><span>Sites below 95% guarantee</span><b>1 of 23</b></div><div><Database/><span>Physical meters in SLD</span><b>129</b></div></article>
       <ChartPanel title="Power profile | P0480 PreCool" hint={`${selectedPeriodLabel(period)} · ${chartUnit}`}><ResponsiveContainer width="100%" height="100%"><LineChart data={period.power} margin={chartMargin}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Line dataKey="solar" name={`Metered solar ${chartUnit}`} stroke="#ff5a43" strokeWidth={2} dot={false}/><Line dataKey="expected" name={`Solcast expectation ${chartUnit}`} stroke="#1a6570" strokeDasharray="5 4" strokeWidth={1.5} dot={false}/></LineChart></ResponsiveContainer></ChartPanel>
@@ -315,19 +326,38 @@ function SingleInverterView({ code, period }: { code: string; period: PrecoolPer
         </Tabs>
         <div className="inverter-metadata"><div><span>PLD model ID</span><strong>INVERTER_{inv.code}</strong></div><div><span>Configured DC</span><strong>{num(configuration.configuredDcKwp,2)} kWp</strong></div><div><span>MPPT / connected strings</span><strong>{configuration.mpptCount} / {configuration.connectedStrings}</strong></div><div><span>Input capacity / source</span><strong>{configuration.inputCapacity} · PLD + VCOM</strong></div></div>
       </article></div>
-    <article className="panel event-table"><div><strong>Source</strong><strong>Coverage</strong><strong>Resolution</strong><strong>Status</strong></div><div><span>electricity_energy_power</span><span>01–31 Aug 2026</span><span>5-minute meters</span><span>Complete</span></div><div><span>vcom_inverter_data</span><span>01–22 Aug; 23 Aug to 08:30</span><span>5-minute inverter + MPPT</span><span>{period.inverterCoverage}</span></div><div><span>solcast_data</span><span>01–31 Aug 2026</span><span>30-minute GHI</span><span>Complete</span></div></article></>;
+    <article className="panel event-table"><div><strong>Source</strong><strong>Coverage</strong><strong>Resolution</strong><strong>Status</strong></div><div><span>{period.source.meterSource}</span><span>{selectedPeriodLabel(period)}</span><span>5-minute meters</span><span>{num(period.totals.meterAvailability,1)}%</span></div><div><span>{period.source.inverterSource}</span><span>{period.source.partialInverterDay ? `Partial ${period.source.partialInverterDay}${period.source.partialInverterThrough ? ` to ${period.source.partialInverterThrough}` : ""}` : selectedPeriodLabel(period)}</span><span>5-minute inverter + MPPT</span><span>{period.inverterCoverage}</span></div><div><span>{period.source.irradianceSource}</span><span>{selectedPeriodLabel(period)}</span><span>30-minute GHI</span><span>{period.totals.solcastPeakGhi > 0 ? "Available" : "No data"}</span></div></article></>;
 }
 
 export function MockEnergyDashboard() {
   const [view, setView] = useState<View>({kind:"portfolio"});
   const [range, setRange] = useState<DateRange>({from:anchorDate,to:anchorDate});
+  const [dataState, setDataState] = useState<{key:string;dataset:PrecoolDataset|null;error:string|null}|null>(null);
+  const [retry, setRetry] = useState(0);
   const item = selectedSite(view);
   const node = view.kind === "meter" ? item.nodes.find(value => value.id === view.nodeId) ?? item.nodes[0] : undefined;
-  const period = useMemo(() => {
-    const from = format(range.from ?? anchorDate,"yyyy-MM-dd");
-    const to = format(range.to ?? range.from ?? anchorDate,"yyyy-MM-dd");
-    return getPrecoolPeriod(from,to);
-  },[range]);
+  const from = format(range.from ?? anchorDate,"yyyy-MM-dd");
+  const to = format(range.to ?? range.from ?? anchorDate,"yyyy-MM-dd");
+  const requestKey = `${from}:${to}:${retry}`;
+  const dataset = dataState?.key === requestKey ? dataState.dataset : null;
+  const dataError = dataState?.key === requestKey ? dataState.error : null;
+  const loading = dataState?.key !== requestKey;
+  const period = useMemo(() => dataset ? getPrecoolPeriod(dataset,from,to) : null,[dataset,from,to]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch(`/api/precool?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {cache:"no-store",signal:controller.signal})
+      .then(async response => {
+        const body = await response.json() as PrecoolDataset & {error?:string};
+        if (!response.ok) throw new Error(body.error || `Doris request failed (${response.status})`);
+        setDataState({key:requestKey,dataset:body,error:null});
+      })
+      .catch(error => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setDataState({key:requestKey,dataset:null,error:error instanceof Error ? error.message : "Unable to load Doris data."});
+      });
+    return () => controller.abort();
+  },[from,to,requestKey]);
 
   useEffect(() => {
     const context = (document as Document & { modelContext?: { registerTool: (tool: unknown, options?: { signal?: AbortSignal }) => void | Promise<void> } }).modelContext;
@@ -338,10 +368,12 @@ export function MockEnergyDashboard() {
   },[]);
 
   return <SidebarProvider defaultOpen style={{"--sidebar-width":"280px","--sidebar-width-icon":"48px"} as React.CSSProperties}><NavigationSidebar view={view} navigate={setView}/><SidebarInset className="application-main"><Topbar view={view} navigate={setView} range={range} onRangeChange={setRange}/><main className="content-area">
-    {view.kind === "portfolio" && <PortfolioView navigate={setView} period={period}/>}
-    {view.kind === "site" && <SiteView item={item} navigate={setView} period={period}/>}
-    {view.kind === "meter" && node && <MeterView item={item} node={node} navigate={setView} period={period}/>}
-    {view.kind === "inverters" && <InverterTotalView navigate={setView} period={period}/>}
-    {view.kind === "inverter" && <SingleInverterView code={view.inverterCode} period={period}/>}
+    {loading && <LiveDataState/>}
+    {!loading && dataError && <LiveDataState error={dataError} onRetry={() => setRetry(value => value + 1)}/>}
+    {period && view.kind === "portfolio" && <PortfolioView navigate={setView} period={period}/>}
+    {period && view.kind === "site" && <SiteView item={item} navigate={setView} period={period}/>}
+    {period && view.kind === "meter" && node && <MeterView item={item} node={node} navigate={setView} period={period}/>}
+    {period && view.kind === "inverters" && <InverterTotalView navigate={setView} period={period}/>}
+    {period && view.kind === "inverter" && <SingleInverterView code={view.inverterCode} period={period}/>}
   </main></SidebarInset></SidebarProvider>;
 }

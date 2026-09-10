@@ -1,6 +1,28 @@
-# vinext-starter
+# PreCool Energy Operations
 
-A clean full-stack starter running on [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and Drizzle support.
+A full-stack React/Vinext energy operations dashboard for Terradew Four and PreCool Cold Storage (P0480).
+
+Operational readings are not committed to the repository. The browser requests a selected date range from the same-origin /api/precool route, which proxies to the private Python service in backend/. That service validates the range, queries Apache Doris server-side, and aggregates electricity_energy_power, vcom_inverter_data, vcom_sensor_data, and solcast_data for the UI. Database credentials never enter the browser bundle.
+
+## Local Doris setup
+
+Create the backend environment:
+
+~~~bash
+python3 -m venv backend/.venv
+backend/.venv/bin/pip install -r backend/requirements.txt
+~~~
+
+Copy .env.example to .env and provide the five DB_* values. .env is ignored by Git. On this WSL workstation, the launcher also recognises the existing sibling ../pld_calculator/.env when a project .env is absent.
+
+Run the complete app:
+
+~~~bash
+npm ci
+npm run dev
+~~~
+
+npm run dev starts the private Doris API on 127.0.0.1:8788 and the React application on http://localhost:5173. The date selector supports live day, week, and month-sized requests of up to 31 days.
 
 ## Prerequisites
 
@@ -17,7 +39,7 @@ This starter does not use `wrangler.jsonc`.
 
 `scripts/sites-env.mjs` preserves the caller's HOME, npm cache, proxy, XDG, and temporary-directory configuration while defaulting Wrangler and Miniflare state to the checkout. If npm reports an unwritable cache, select a writable path with `npm_config_cache` for that install. The `dev` and `start` scripts also keep Wrangler logs inside the checkout. Generated `.sites-runtime/` and `.wrangler/` directories are disposable and ignored by Git.
 
-`npm run dev` uses `vinext dev` for the live Vite preview with HMR, starting at port 5173. Vinext records the running server in ignored `.vinext/` state and rejects another start for the same checkout while that process is alive; reuse its printed URL. It recovers stale state after a stopped process. Pass `--port <port>` or `--hostname <host>` after `npm run dev --` when needed; keep Codex previews on loopback. Like the Sites package, this relies on Vinext's advisory lock; exactly simultaneous starts can race.
+npm run dev:frontend runs only the Vinext frontend for situations where the Doris API is already managed separately.
 
 The bundled Sites Vite plugin simulates ChatGPT sign-in only for loopback development requests. Visit `/signin-with-chatgpt?return_to=/` to sign in as `local_seedy` (`seedy@sites.test`, display name `Seedy`) and `/signout-with-chatgpt?return_to=/` to sign out. The development cookie preserves that identity across server restarts. This does not exercise real ChatGPT OAuth and is not included in production builds; hosted authentication remains dispatch-owned.
 

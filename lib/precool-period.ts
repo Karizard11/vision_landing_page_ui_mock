@@ -1,9 +1,6 @@
-import augustData from "@/lib/precool-august-2026.json";
 import { inverterSummary as inverterMetadata } from "@/lib/precool-data";
 
-export const AUGUST_START = "2026-08-01";
-export const AUGUST_END = "2026-08-31";
-export const LATEST_COMPLETE_INVERTER_DAY = "2026-08-22";
+export const DEFAULT_PRECOOL_DATE = "2026-08-22";
 
 export type PrecoolPowerPoint = {
   time: string;
@@ -45,7 +42,7 @@ export type PrecoolTelemetryChannel = {
   power: number;
 };
 
-type PrecoolDay = {
+export type PrecoolDay = {
   totals: {
     solarEnergyMwh: number;
     inverterEnergyMwh: number;
@@ -70,17 +67,18 @@ type PrecoolDay = {
   telemetry: Record<string, { capturedAt: string; channels: PrecoolTelemetryChannel[] }>;
 };
 
-type PrecoolAugustData = {
+export type PrecoolDataset = {
   range: {
     from: string;
     to: string;
-    latestCompleteInverterDay: string;
-    partialInverterDay: string;
-    partialInverterThrough: string;
+    latestCompleteInverterDay: string | null;
+    partialInverterDay: string | null;
+    partialInverterThrough: string | null;
     sensorAvailable: boolean;
     meterSource: string;
     inverterSource: string;
     irradianceSource: string;
+    dataAsOf: string | null;
   };
   days: Record<string, PrecoolDay>;
 };
@@ -100,9 +98,9 @@ export type PrecoolPeriod = {
   telemetryDate: string | null;
   inverterCoverage: "complete" | "partial" | "unavailable" | "mixed";
   sensorAvailable: boolean;
+  source: PrecoolDataset["range"];
 };
 
-const data = augustData as unknown as PrecoolAugustData;
 const meterKeys = ["pvdb1", "pvdb2", "incomer1", "incomer2", "incomer3"];
 const numberValue = (value: number | null | undefined) => Number.isFinite(value) ? Number(value) : 0;
 
@@ -110,11 +108,9 @@ function dayLabel(key: string) {
   return new Intl.DateTimeFormat("en-ZA", { day: "2-digit", month: "short", timeZone: "UTC" }).format(new Date(`${key}T00:00:00Z`));
 }
 
-export function getPrecoolPeriod(from: string, to: string): PrecoolPeriod {
-  const boundedFrom = from < AUGUST_START ? AUGUST_START : from > AUGUST_END ? AUGUST_END : from;
-  const boundedTo = to > AUGUST_END ? AUGUST_END : to < AUGUST_START ? AUGUST_START : to;
-  const start = boundedFrom <= boundedTo ? boundedFrom : boundedTo;
-  const end = boundedFrom <= boundedTo ? boundedTo : boundedFrom;
+export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string): PrecoolPeriod {
+  const start = from <= to ? from : to;
+  const end = from <= to ? to : from;
   const selected = Object.entries(data.days).filter(([key]) => key >= start && key <= end);
   const selectedDays = selected.map(([,day]) => day);
   const dayCount = selectedDays.length;
@@ -225,7 +221,6 @@ export function getPrecoolPeriod(from: string, to: string): PrecoolPeriod {
     telemetryDate,
     inverterCoverage,
     sensorAvailable:data.range.sensorAvailable,
+    source:data.range,
   };
 }
-
-export const precoolAugustSource = data.range;
