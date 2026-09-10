@@ -1,4 +1,5 @@
 import { inverterSummary as inverterMetadata } from "@/lib/precool-data";
+import { combineMeterSnapshots } from "@/lib/meter-period";
 import { periodBucketMinutes, periodGranularity, type PeriodGranularity } from "@/lib/period-resolution";
 
 export const DEFAULT_PRECOOL_DATE = "2026-08-22";
@@ -66,6 +67,44 @@ export type PrecoolTelemetryHistory = {
   }>;
 };
 
+export type MunicipalCostLine = {
+  sequence: number;
+  lineKey: string;
+  label: string;
+  applicabilityText: string;
+  touBand: string | null;
+  quantity: number | null;
+  quantityUnit: string | null;
+  unitRate: number | null;
+  rateUnit: string | null;
+  amountR: number | null;
+};
+
+export type MunicipalFinancials = {
+  state: "planned" | "ready" | "warning" | "blocked";
+  reasonCodes: string[];
+  messages: string[];
+  calculation: string;
+  sourceContractId: string | null;
+  tariffProfileId: number | null;
+  tariffProfileName: string | null;
+  tariffCurrency: string | null;
+  totalImportKwh: number | null;
+  totalExportKwh: number | null;
+  peakDemandKva: number | null;
+  peakDemandAt: string | null;
+  averageCostRPerKwh: number | null;
+  energyChargeR: number | null;
+  demandChargeR: number | null;
+  fixedChargeR: number | null;
+  otherChargeR: number | null;
+  subtotalExcludingVatR: number | null;
+  vatRatePercent: number | null;
+  vatAmountR: number | null;
+  totalIncludingVatR: number | null;
+  costLines: MunicipalCostLine[];
+};
+
 export type PrecoolDay = {
   totals: {
     solarEnergyMwh: number;
@@ -112,6 +151,9 @@ export type PrecoolDataset = {
     dataAsOf: string | null;
     powerIntervalMinutes?: number;
   };
+  financials?: {
+    municipal?: MunicipalFinancials;
+  };
   days: Record<string, PrecoolDay>;
 };
 
@@ -131,6 +173,7 @@ export type PrecoolPeriod = {
   inverterCoverage: "complete" | "partial" | "unavailable" | "mixed";
   sensorAvailable: boolean;
   source: PrecoolDataset["range"];
+  financials: PrecoolDataset["financials"];
 };
 
 const precoolMeterKeys = ["pvdb1", "pvdb2", "incomer1", "incomer2", "incomer3"];
@@ -291,11 +334,7 @@ export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string)
   const meterKeys = data.site?.meterKeys ?? precoolMeterKeys;
   const meters = Object.fromEntries(meterKeys.map(key => {
     const snapshots = selectedDays.map(day => day.meters[key]).filter(Boolean);
-    return [key,{
-      energyMwh:snapshots.reduce((sum,item) => sum + item.energyMwh,0),
-      peakKw:Math.max(0,...snapshots.map(item => item.peakKw)),
-      readings:snapshots.reduce((sum,item) => sum + item.readings,0),
-    }];
+    return [key,combineMeterSnapshots(snapshots)];
   }));
 
   const power = resamplePower(selected,granularity,sourceIntervalMinutes);
@@ -369,5 +408,6 @@ export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string)
     inverterCoverage,
     sensorAvailable:data.range.sensorAvailable,
     source:data.range,
+    financials:data.financials ?? {},
   };
 }

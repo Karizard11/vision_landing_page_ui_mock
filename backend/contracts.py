@@ -272,6 +272,9 @@ def query_contract_catalog(connection) -> list[dict[str, Any]]:
             "meterCount": len(physical_serials),
             "nodeCount": len({node["navigationKey"] for node in nodes}),
             "systemKey": _text(row.get("system_key")),
+            "solarTotalDeviceNodeId": _identifier(row.get("solar_total_device_node_id")) or None,
+            "municipalTotalDeviceNodeId": _identifier(row.get("municipal_total_device_node_id")) or None,
+            "loadDeviceNodeId": _identifier(row.get("load_device_node_id")) or None,
             "systemActive": bool(row.get("system_active")) if row.get("system_active") is not None else None,
             "solarMeterSerials": role_serials["solar"],
             "municipalMeterSerials": role_serials["municipal"],
@@ -439,6 +442,7 @@ def aggregate_contract_payload(
     start_day: date,
     end_day: date,
     source: dict[str, Any],
+    financials: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     daily = bool(source["daily"])
     days = [(start_day + timedelta(days=index)).isoformat() for index in range((end_day - start_day).days + 1)]
@@ -704,5 +708,6 @@ def aggregate_contract_payload(
             "irradianceSource": "solcast_data",
             "dataAsOf": latest_timestamp.isoformat() if latest_timestamp else None,
         },
+        "financials": financials or {},
         "days": payload_days,
     }

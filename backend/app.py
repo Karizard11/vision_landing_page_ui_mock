@@ -17,6 +17,7 @@ from contracts import (
     query_contract_catalog,
     query_contract_source,
 )
+from reporting_financials import load_municipal_financials
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -112,6 +113,26 @@ def inverter_code(name: Any, inverter_id: Any) -> str:
         return match.group(1).zfill(2)
     fallback = re.search(r"(\d+)$", str(inverter_id or ""))
     return fallback.group(1).zfill(2) if fallback else str(inverter_id)
+
+
+def select_inverter_metadata(
+    metadata: list[dict[str, Any]],
+    requested_code: str,
+) -> dict[str, Any] | None:
+    candidates = [
+        row for row in metadata
+        if inverter_code(row.get("inverter_name"), row.get("inverter_id")) == requested_code
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda row: (
+            int(row.get("selected_readings") or 0),
+            str(row.get("latest_selected") or ""),
+            str(row.get("inverter_id") or ""),
+        ),
+    )
 
 
 def date_keys(start_day: date, end_day: date) -> list[str]:
@@ -399,19 +420,20 @@ def query_inverter_telemetry(
             metadata = select_rows(
                 cursor,
                 """
-                SELECT inverter_id, inverter_name
-                FROM vcom_inverters
-                WHERE system_key = %s
+                SELECT i.inverter_id, i.inverter_name,
+                       COUNT(d.timestamp) AS selected_readings,
+                       MAX(d.timestamp) AS latest_selected
+                FROM vcom_inverters i
+                LEFT JOIN vcom_inverter_data d
+                  ON d.system_key = i.system_key
+                 AND d.inverter_id = i.inverter_id
+                 AND d.timestamp >= %s AND d.timestamp < %s
+                WHERE i.system_key = %s
+                GROUP BY i.inverter_id, i.inverter_name
                 """,
-                (SYSTEM_KEY,),
+                (start, end, SYSTEM_KEY),
             )
-            matched = next(
-                (
-                    row for row in metadata
-                    if inverter_code(row.get("inverter_name"), row.get("inverter_id")) == requested_code
-                ),
-                None,
-            )
+            matched = select_inverter_metadata(metadata, requested_code)
             if not matched:
                 raise ValueError(f"unknown inverter code {requested_code}")
             inverter_id = str(matched["inverter_id"])
@@ -1041,7 +1063,22 @@ def contract_site():
                 end,
                 daily=(end_day - start_day).days + 1 > 14,
             )
-        response = jsonify(aggregate_contract_payload(site, start_day, end_day, source))
+        financials = {
+            "municipal": load_municipal_financials(
+                site.get("municipalTotalDeviceNodeId"),
+                start_day,
+                end_day,
+            )
+        }
+        response = jsonify(
+            aggregate_contract_payload(
+                site,
+                start_day,
+                end_day,
+                source,
+                financials,
+            )
+        )
         response.headers["Cache-Control"] = "private, no-store"
         return response
     except ValueError as error:

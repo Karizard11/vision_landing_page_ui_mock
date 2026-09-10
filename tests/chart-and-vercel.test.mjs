@@ -15,6 +15,17 @@ test("every chart series can be toggled from its legend", () => {
   assert.equal(toggleCount, seriesCount);
 });
 
+test("the interface has no View dashboard action", () => {
+  assert.doesNotMatch(component, /View dashboard/);
+});
+
+test("municipal and solar financial language keeps pricing boundaries explicit", () => {
+  assert.match(component, /Municipal electricity cost build-up/);
+  assert.match(component, /canonical reporting tariff-pricing engine/);
+  assert.match(component, /PPA rate exposure/);
+  assert.match(component, /not labelled as savings or an invoice/);
+});
+
 test("the PreCool site overview stacks grid and solar supply", () => {
   assert.match(component, /stackId="site-supply"[^>]*dataKey="grid"/);
   assert.match(component, /stackId="site-supply"[^>]*dataKey="solar"/);

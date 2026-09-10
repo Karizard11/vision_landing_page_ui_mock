@@ -24,11 +24,17 @@ npm run dev
 
 npm run dev starts the private Doris API on 127.0.0.1:8788 and the React application on http://localhost:5173. The date selector supports live day, week, and month-sized requests of up to 31 days.
 
-## Vercel deployment
+## Municipal tariff financials
 
-The repository is a two-service Vercel project: the Next.js interface is bound privately to the Flask Doris API. In Vercel, set the project Framework Preset to **Services** and add `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_DATABASE` as encrypted environment variables. Do not set `DORIS_API_BASE_URL`; Vercel injects the deployment-aware backend service URL from `vercel.json`.
+Municipal Total views use the canonical Single Meter pricing flow from the sibling reporting project. By default the backend expects:
 
-The Doris host must accept connections from the Vercel function region. If Doris is IP-restricted, use Vercel Secure Compute/static egress or expose the API through an approved HTTPS service rather than making credentials public.
+- reporting project: `/home/kavishchetty/reporting`
+- reporting Python: `/home/kavishchetty/reporting/services/worker-py/.venv/bin/python`
+- worker source: `/home/kavishchetty/reporting/services/worker-py/src`
+
+Override those paths with `REPORTING_ROOT`, `REPORTING_PYTHON`, and `REPORTING_WORKER_SRC` when needed. The selected municipal device node is resolved to its active Single Meter contract, its tariff is priced through the reporting tariff engine, and the complete pricing result is returned to the UI. If the runtime, contract mapping, meter data, or tariff is unavailable or ambiguous, the financial panel fails closed and shows the reason instead of estimating a bill.
+
+Solar financial cards intentionally show only generation valued at the current PPA rate. They do not call that amount savings or an invoice. Report-grade savings require the reporting policy calculation that separately combines municipal avoided energy, PPA energy, demand effects, and feed-in benefit.
 
 ## Prerequisites
 

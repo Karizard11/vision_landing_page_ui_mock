@@ -28,6 +28,10 @@ export type PortfolioSite = {
   meterCount: number;
   nodeCount: number;
   systemKey: string;
+  systemActive?: boolean | null;
+  solarTotalDeviceNodeId?: string | null;
+  municipalTotalDeviceNodeId?: string | null;
+  loadDeviceNodeId?: string | null;
   nodes: PortfolioNode[];
 };
 

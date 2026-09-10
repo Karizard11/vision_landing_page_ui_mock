@@ -3,10 +3,12 @@ from unittest import TestCase
 
 from app import (
     period_granularity,
+    select_inverter_metadata,
     telemetry_series_from_daily,
     telemetry_series_from_raw,
 )
 from contracts import _navigation_nodes, aggregate_contract_payload, contract_navigation_label
+from reporting_financials import load_municipal_financials
 
 
 class PeriodGranularityTests(TestCase):
@@ -20,6 +22,16 @@ class PeriodGranularityTests(TestCase):
 
 
 class TelemetryAggregationTests(TestCase):
+    def test_duplicate_inverter_name_prefers_candidate_with_selected_readings(self):
+        rows = [
+            {"inverter_id": "Id227186.1", "inverter_name": "07 - SG125CX", "selected_readings": 0},
+            {"inverter_id": "Id227186.13", "inverter_name": "07 - SG125CX", "selected_readings": 864},
+        ]
+
+        result = select_inverter_metadata(rows, "07")
+
+        self.assertEqual(result["inverter_id"], "Id227186.13")
+
     def test_raw_rows_roll_up_to_half_hour(self):
         rows = [
             {"timestamp": datetime(2026, 8, 21, 9, 0), "I_DC1": 10, "U_DC1": 700},
@@ -123,6 +135,44 @@ class ContractPowerAggregationTests(TestCase):
         self.assertEqual(point["gridStot"], 22)
         self.assertEqual(point["site"], 30)
         self.assertEqual(point["siteStot"], 33)
+
+    def test_payload_preserves_tariff_pricing_result(self):
+        site = {
+            "contractId": "1",
+            "code": "P1",
+            "capacityKwp": 1,
+            "tariff": 1,
+            "nodes": [],
+            "solarMeterSerials": [],
+            "municipalMeterSerials": [],
+        }
+        source = {
+            "daily": False,
+            "meters": [],
+            "inverters": [],
+            "solcast": [],
+            "sensors": [],
+        }
+        financials = {"municipal": {"state": "ready", "totalIncludingVatR": 12.34}}
+
+        payload = aggregate_contract_payload(
+            site,
+            date(2026, 8, 22),
+            date(2026, 8, 22),
+            source,
+            financials,
+        )
+
+        self.assertEqual(payload["financials"], financials)
+
+
+class ReportingFinancialBridgeTests(TestCase):
+    def test_missing_municipal_node_fails_closed_without_partial_cost(self):
+        result = load_municipal_financials(None, date(2026, 8, 22), date(2026, 8, 22))
+
+        self.assertEqual(result["state"], "blocked")
+        self.assertEqual(result["reasonCodes"], ["MUNICIPAL_TOTAL_DEVICE_NODE_MISSING"])
+        self.assertIsNone(result["totalIncludingVatR"])
 
 
 if __name__ == "__main__":
