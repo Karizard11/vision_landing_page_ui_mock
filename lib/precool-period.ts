@@ -11,7 +11,11 @@ export type PrecoolPowerPoint = {
   incomer2: number;
   incomer3: number;
   solar: number;
+  solarStot: number;
   grid: number;
+  gridStot: number;
+  site: number;
+  siteStot: number;
   inverter: number | null;
   ghi: number;
   sensorGhi: number | null;
@@ -22,6 +26,7 @@ export type PrecoolPowerPoint = {
 export type PrecoolMeterSnapshot = {
   energyMwh: number;
   peakKw: number;
+  peakKva?: number;
   readings: number;
 };
 

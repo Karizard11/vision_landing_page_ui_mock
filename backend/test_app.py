@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from unittest import TestCase
 
 from app import (
@@ -6,7 +6,7 @@ from app import (
     telemetry_series_from_daily,
     telemetry_series_from_raw,
 )
-from contracts import _navigation_nodes, contract_navigation_label
+from contracts import _navigation_nodes, aggregate_contract_payload, contract_navigation_label
 
 
 class PeriodGranularityTests(TestCase):
@@ -87,6 +87,42 @@ class ContractCatalogTests(TestCase):
         self.assertEqual(by_key["municipal-total"]["parentNavigationKey"], "site-total")
         self.assertEqual(by_key["base-101"]["parentNavigationKey"], "base-201")
         self.assertEqual(by_key["solar-101"]["parentNavigationKey"], "solar-total")
+
+
+class ContractPowerAggregationTests(TestCase):
+    def test_active_and_apparent_power_roll_up_to_all_three_totals(self):
+        site = {
+            "contractId": "P0480-1",
+            "code": "P0480",
+            "capacityKwp": 100,
+            "tariff": 1,
+            "nodes": [
+                {"type": "Solar", "seriesKey": "pvdb1", "meterSerials": ["SOLAR"], "isPhysical": True},
+                {"type": "Transformer", "seriesKey": "incomer1", "meterSerials": ["GRID"], "isPhysical": True},
+            ],
+            "solarMeterSerials": ["SOLAR"],
+            "municipalMeterSerials": ["GRID"],
+        }
+        source = {
+            "daily": False,
+            "meters": [
+                {"timestamp": datetime(2026, 8, 22, 0, 0), "meter_serial": "SOLAR", "import_wh": 0, "export_wh": 1000, "ptot": 10_000, "stot": 11_000},
+                {"timestamp": datetime(2026, 8, 22, 0, 0), "meter_serial": "GRID", "import_wh": 1000, "export_wh": 0, "ptot": 20_000, "stot": 22_000},
+            ],
+            "inverters": [],
+            "solcast": [],
+            "sensors": [],
+        }
+
+        payload = aggregate_contract_payload(site, date(2026, 8, 22), date(2026, 8, 22), source)
+        point = payload["days"]["2026-08-22"]["power"][0]
+
+        self.assertEqual(point["solar"], 10)
+        self.assertEqual(point["solarStot"], 11)
+        self.assertEqual(point["grid"], 20)
+        self.assertEqual(point["gridStot"], 22)
+        self.assertEqual(point["site"], 30)
+        self.assertEqual(point["siteStot"], 33)
 
 
 if __name__ == "__main__":

@@ -330,7 +330,8 @@ def query_contract_source(
                     SELECT DATE(timestamp) AS bucket_date, meter_serial,
                            MIN(import_wh) AS import_start, MAX(import_wh) AS import_end,
                            MIN(export_wh) AS export_start, MAX(export_wh) AS export_end,
-                           MAX(ABS(ptot)) AS peak_ptot, COUNT(*) AS readings
+                           MAX(ABS(ptot)) AS peak_ptot,
+                           MAX(ABS(stot)) AS peak_stot, COUNT(*) AS readings
                     FROM electricity_energy_power
                     WHERE meter_serial IN ({placeholders})
                       AND timestamp >= %s AND timestamp < %s
@@ -343,7 +344,7 @@ def query_contract_source(
                 meters = _select(
                     cursor,
                     f"""
-                    SELECT timestamp, meter_serial, import_wh, export_wh, ptot
+                    SELECT timestamp, meter_serial, import_wh, export_wh, ptot, stot
                     FROM electricity_energy_power
                     WHERE meter_serial IN ({placeholders})
                       AND timestamp >= %s AND timestamp < %s
@@ -442,16 +443,18 @@ def aggregate_contract_payload(
     daily = bool(source["daily"])
     days = [(start_day + timedelta(days=index)).isoformat() for index in range((end_day - start_day).days + 1)]
     meter_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    meter_buckets: dict[tuple[str, int, str], list[float]] = defaultdict(list)
+    meter_buckets: dict[tuple[str, int, str, str], list[float]] = defaultdict(list)
     for row in source["meters"]:
         timestamp = _as_datetime(row.get("bucket_date") if daily else row.get("timestamp"))
         day = timestamp.date().isoformat()
         serial = _text(row.get("meter_serial"))
         meter_groups[(day, serial)].append(row)
         if not daily:
-            value = _optional_number(row.get("ptot"))
-            if value is not None:
-                meter_buckets[(day, timestamp.hour * 12 + timestamp.minute // 5, serial)].append(abs(value) / 1000)
+            bucket = timestamp.hour * 12 + timestamp.minute // 5
+            for field in ("ptot", "stot"):
+                value = _optional_number(row.get(field))
+                if value is not None:
+                    meter_buckets[(day, bucket, serial, field)].append(abs(value) / 1000)
 
     inverter_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     inverter_buckets: dict[tuple[str, int, str, str], list[float]] = defaultdict(list)
@@ -518,6 +521,7 @@ def aggregate_contract_payload(
     for day in days:
         serial_energy: dict[tuple[str, bool], float] = {}
         serial_peak: dict[str, float] = {}
+        serial_apparent_peak: dict[str, float] = {}
         serial_readings: dict[str, int] = {}
         all_serials = {serial for node in site["nodes"] for serial in node.get("meterSerials", [])}
         for serial in all_serials:
@@ -527,11 +531,13 @@ def aggregate_contract_payload(
                 serial_energy[(serial, False)] = max(_number(row.get("import_end")) - _number(row.get("import_start")), 0) / 1_000_000
                 serial_energy[(serial, True)] = max(_number(row.get("export_end")) - _number(row.get("export_start")), 0) / 1_000_000
                 serial_peak[serial] = _number(row.get("peak_ptot")) / 1000
+                serial_apparent_peak[serial] = _number(row.get("peak_stot")) / 1000
                 serial_readings[serial] = int(row.get("readings") or 0)
             else:
                 serial_energy[(serial, False)] = _register_delta(rows, "import_wh") / 1_000_000
                 serial_energy[(serial, True)] = _register_delta(rows, "export_wh") / 1_000_000
                 serial_peak[serial] = max([abs(_number(row.get("ptot"))) / 1000 for row in rows] or [0])
+                serial_apparent_peak[serial] = max([abs(_number(row.get("stot"))) / 1000 for row in rows] or [0])
                 serial_readings[serial] = len(rows)
 
         meters: dict[str, Any] = {}
@@ -544,6 +550,7 @@ def aggregate_contract_payload(
             meters[key] = {
                 "energyMwh": round(sum(serial_energy[(serial, is_solar)] for serial in serials), 6),
                 "peakKw": round(sum(serial_peak.get(serial, 0) for serial in serials), 3),
+                "peakKva": round(sum(serial_apparent_peak.get(serial, 0) for serial in serials), 3),
                 "readings": sum(serial_readings.get(serial, 0) for serial in serials),
             }
 
@@ -553,16 +560,19 @@ def aggregate_contract_payload(
         meters["solar"] = {
             "energyMwh": round(solar_energy, 6),
             "peakKw": round(sum(serial_peak.get(serial, 0) for serial in solar_serials), 3),
+            "peakKva": round(sum(serial_apparent_peak.get(serial, 0) for serial in solar_serials), 3),
             "readings": sum(serial_readings.get(serial, 0) for serial in solar_serials),
         }
         meters["grid"] = {
             "energyMwh": round(grid_energy, 6),
             "peakKw": round(sum(serial_peak.get(serial, 0) for serial in grid_serials), 3),
+            "peakKva": round(sum(serial_apparent_peak.get(serial, 0) for serial in grid_serials), 3),
             "readings": sum(serial_readings.get(serial, 0) for serial in grid_serials),
         }
         meters["site"] = {
             "energyMwh": round(grid_energy + solar_energy - grid_export / 1000, 6),
             "peakKw": round(meters["grid"]["peakKw"] + meters["solar"]["peakKw"], 3),
+            "peakKva": round(meters["grid"]["peakKva"] + meters["solar"]["peakKva"], 3),
             "readings": sum(serial_readings.values()),
         }
 
@@ -609,6 +619,7 @@ def aggregate_contract_payload(
             point: dict[str, Any] = {"time": "00:00"}
             for key, snapshot in meters.items():
                 point[key] = snapshot["peakKw"]
+                point[f"{key}Stot"] = snapshot["peakKva"]
             point["solar"] = meters["solar"]["peakKw"]
             point["grid"] = meters["grid"]["peakKw"]
             point["site"] = meters["site"]["peakKw"]
@@ -627,10 +638,15 @@ def aggregate_contract_payload(
                     key = node.get("seriesKey")
                     if not key or key in {"site", "solar", "grid"}:
                         continue
-                    point[key] = round(sum(_mean(meter_buckets[(day, bucket, serial)]) or 0 for serial in set(node.get("meterSerials", []))), 3)
-                point["solar"] = round(sum(_mean(meter_buckets[(day, bucket, serial)]) or 0 for serial in solar_serials), 3)
-                point["grid"] = round(sum(_mean(meter_buckets[(day, bucket, serial)]) or 0 for serial in grid_serials), 3)
+                    serials = set(node.get("meterSerials", []))
+                    point[key] = round(sum(_mean(meter_buckets[(day, bucket, serial, "ptot")]) or 0 for serial in serials), 3)
+                    point[f"{key}Stot"] = round(sum(_mean(meter_buckets[(day, bucket, serial, "stot")]) or 0 for serial in serials), 3)
+                point["solar"] = round(sum(_mean(meter_buckets[(day, bucket, serial, "ptot")]) or 0 for serial in solar_serials), 3)
+                point["solarStot"] = round(sum(_mean(meter_buckets[(day, bucket, serial, "stot")]) or 0 for serial in solar_serials), 3)
+                point["grid"] = round(sum(_mean(meter_buckets[(day, bucket, serial, "ptot")]) or 0 for serial in grid_serials), 3)
+                point["gridStot"] = round(sum(_mean(meter_buckets[(day, bucket, serial, "stot")]) or 0 for serial in grid_serials), 3)
                 point["site"] = round(point["grid"] + point["solar"], 3)
+                point["siteStot"] = round(point["gridStot"] + point["solarStot"], 3)
                 inverter_values = [_mean(inverter_buckets[(day, bucket, item["code"], "P_AC")]) for item in summaries]
                 point["inverter"] = round(sum(value for value in inverter_values if value is not None), 3) if any(value is not None for value in inverter_values) else None
                 solcast_bucket = bucket - bucket % 6

@@ -162,7 +162,7 @@ def query_doris(start: datetime, end: datetime) -> dict[str, Any]:
             meter_rows = select_rows(
                 cursor,
                 f"""
-                SELECT timestamp, meter_serial, import_wh, export_wh, ptot
+                SELECT timestamp, meter_serial, import_wh, export_wh, ptot, stot
                 FROM electricity_energy_power
                 WHERE meter_serial IN ({serial_placeholders})
                   AND timestamp >= %s AND timestamp < %s
@@ -501,6 +501,7 @@ def query_doris_daily(start: datetime, end: datetime) -> dict[str, Any]:
                        MIN(export_wh) AS export_start,
                        MAX(export_wh) AS export_end,
                        MAX(ABS(ptot)) AS peak_ptot,
+                       MAX(ABS(stot)) AS peak_stot,
                        COUNT(*) AS readings
                 FROM electricity_energy_power
                 WHERE meter_serial IN ({serial_placeholders})
@@ -613,6 +614,7 @@ def aggregate_daily_payload(
             meter_summary[label] = {
                 "energyMwh": rounded(imported / 1_000_000, 6) or 0,
                 "peakKw": rounded((finite_number(row.get("peak_ptot")) or 0) / 1000, 3) or 0,
+                "peakKva": rounded((finite_number(row.get("peak_stot")) or 0) / 1000, 3) or 0,
                 "readings": int(row.get("readings") or 0),
             }
 
@@ -669,8 +671,15 @@ def aggregate_daily_payload(
             "incomer1": meter_summary["incomer1"]["peakKw"],
             "incomer2": meter_summary["incomer2"]["peakKw"],
             "incomer3": meter_summary["incomer3"]["peakKw"],
+            "pvdb1Stot": meter_summary["pvdb1"]["peakKva"],
+            "pvdb2Stot": meter_summary["pvdb2"]["peakKva"],
+            "incomer1Stot": meter_summary["incomer1"]["peakKva"],
+            "incomer2Stot": meter_summary["incomer2"]["peakKva"],
+            "incomer3Stot": meter_summary["incomer3"]["peakKva"],
             "solar": meter_summary["pvdb1"]["peakKw"] + meter_summary["pvdb2"]["peakKw"],
             "grid": sum(meter_summary[label]["peakKw"] for label in ("incomer1", "incomer2", "incomer3")),
+            "solarStot": meter_summary["pvdb1"]["peakKva"] + meter_summary["pvdb2"]["peakKva"],
+            "gridStot": sum(meter_summary[label]["peakKva"] for label in ("incomer1", "incomer2", "incomer3")),
             "inverter": sum(item["peakAc"] for item in inverter_summary) if inverter_summary else None,
             "ghi": irradiation * 1000,
             "sensorGhi": finite_number(sensor_lookup.get(day, {}).get("peak_srad")),
@@ -734,16 +743,17 @@ def aggregate_daily_payload(
 def aggregate_payload(start_day: date, end_day: date, source: dict[str, Any]) -> dict[str, Any]:
     keys = date_keys(start_day, end_day)
     meter_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    meter_bucket_values: dict[tuple[str, int, str], list[float]] = defaultdict(list)
+    meter_bucket_values: dict[tuple[str, int, str, str], list[float]] = defaultdict(list)
     for row in source["meters"]:
         timestamp = row["timestamp"]
         day = timestamp.date().isoformat()
         serial = str(row["meter_serial"])
         meter_groups[(day, serial)].append(row)
-        value = finite_number(row.get("ptot"))
-        if value is not None:
-            bucket = timestamp.hour * 12 + timestamp.minute // 5
-            meter_bucket_values[(day, bucket, serial)].append(abs(value) / 1000)
+        bucket = timestamp.hour * 12 + timestamp.minute // 5
+        for field in ("ptot", "stot"):
+            value = finite_number(row.get(field))
+            if value is not None:
+                meter_bucket_values[(day, bucket, serial, field)].append(abs(value) / 1000)
 
     inverter_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     inverter_bucket_values: dict[tuple[str, int, str, str], list[float]] = defaultdict(list)
@@ -812,6 +822,11 @@ def aggregate_payload(start_day: date, end_day: date, source: dict[str, Any]) ->
             meter_summary[label] = {
                 "energyMwh": rounded(energy_mwh, 6) or 0,
                 "peakKw": rounded(max(peaks, default=0), 3) or 0,
+                "peakKva": rounded(max([
+                    abs(value) / 1000
+                    for value in (finite_number(row.get("stot")) for row in rows)
+                    if value is not None
+                ], default=0), 3) or 0,
                 "readings": len(rows),
             }
 
@@ -880,9 +895,14 @@ def aggregate_payload(start_day: date, end_day: date, source: dict[str, Any]) ->
                 "time": f"{bucket // 12:02d}:{bucket % 12 * 5:02d}"
             }
             for serial, label in METER_LABELS.items():
-                point[label] = rounded(mean(meter_bucket_values[(day, bucket, serial)]) or 0, 3) or 0
+                point[label] = rounded(mean(meter_bucket_values[(day, bucket, serial, "ptot")]) or 0, 3) or 0
+                point[f"{label}Stot"] = rounded(mean(meter_bucket_values[(day, bucket, serial, "stot")]) or 0, 3) or 0
             point["solar"] = rounded(point["pvdb1"] + point["pvdb2"], 3) or 0
             point["grid"] = rounded(point["incomer1"] + point["incomer2"] + point["incomer3"], 3) or 0
+            point["solarStot"] = rounded(point["pvdb1Stot"] + point["pvdb2Stot"], 3) or 0
+            point["gridStot"] = rounded(point["incomer1Stot"] + point["incomer2Stot"] + point["incomer3Stot"], 3) or 0
+            point["site"] = rounded(point["grid"] + point["solar"], 3) or 0
+            point["siteStot"] = rounded(point["gridStot"] + point["solarStot"], 3) or 0
             inverter_values = [
                 mean(inverter_bucket_values[(day, bucket, summary["code"], "P_AC")])
                 for summary in inverter_summary
