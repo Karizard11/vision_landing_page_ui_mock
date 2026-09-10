@@ -126,6 +126,33 @@ export const inverterStringTelemetry: Record<string, { medianCurrent: number; ca
 
 export const stringData = inverterStringTelemetry["01"].strings;
 
+export type MpptTelemetry = StringTelemetry;
+export const inverterMpptTelemetry = inverterStringTelemetry;
+
+export type InverterMpptConfig = { mppt: number; connectedStrings: number; inputCapacity: number; panelsPerString: number; moduleType: string; sectionId: string; section: string; orientation: number; tilt: number; mountingType: string };
+export type InverterElectricalConfig = { inverterType: string; mpptCount: number; inputsPerMppt: number; connectedStrings: number; inputCapacity: number; configuredDcKwp: number; mppts: InverterMpptConfig[] };
+
+const pldSections = {"ROOF_1_2":{"section":"ROOF 1.2","orientation":9,"tilt":3,"mountingType":"roof_mount"},"ROOF_2_2":{"section":"ROOF 2.2","orientation":189,"tilt":3,"mountingType":"roof_mount"},"ROOF_1_1":{"section":"ROOF 1.1","orientation":9,"tilt":3,"mountingType":"roof_mount"},"ROOF_2_1":{"section":"ROOF 2.1","orientation":189,"tilt":3,"mountingType":"roof_mount"}} as const;
+const pldInverter = (configuredDcKwp: number, rows: Array<[connectedStrings: number, panelsPerString: number, sectionId: keyof typeof pldSections]>): InverterElectricalConfig => ({
+  inverterType: "SG125CX_P2", mpptCount: 12, inputsPerMppt: 2, connectedStrings: rows.reduce((sum,row) => sum + row[0],0), inputCapacity: 24, configuredDcKwp,
+  mppts: rows.map(([connectedStrings,panelsPerString,sectionId],index) => ({ mppt:index+1, connectedStrings, inputCapacity:2, panelsPerString, moduleType:"CS6W_550MS", sectionId, ...pldSections[sectionId] })),
+});
+
+export const inverterConfiguration: Record<string, InverterElectricalConfig> = {
+  "10": pldInverter(156.2,[[2,14,"ROOF_1_2"],[1,14,"ROOF_1_2"],[2,14,"ROOF_2_2"],[1,14,"ROOF_2_2"],[2,20,"ROOF_2_2"],[2,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"]]),
+  "11": pldInverter(154,[[2,20,"ROOF_2_2"],[2,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"]]),
+  "12": pldInverter(144.65,[[2,20,"ROOF_2_2"],[2,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,20,"ROOF_2_2"],[1,17,"ROOF_2_2"],[1,17,"ROOF_2_2"],[1,17,"ROOF_2_2"],[1,16,"ROOF_1_1"],[1,16,"ROOF_1_1"]]),
+  "01": pldInverter(154,[[2,20,"ROOF_1_1"],[2,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"]]),
+  "02": pldInverter(154,[[2,20,"ROOF_1_1"],[2,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"],[1,20,"ROOF_1_1"]]),
+  "03": pldInverter(151.8,[[2,20,"ROOF_1_1"],[2,20,"ROOF_1_1"],[1,16,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"]]),
+  "04": pldInverter(151.8,[[2,20,"ROOF_1_2"],[2,20,"ROOF_1_2"],[1,16,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"]]),
+  "05": pldInverter(152.9,[[2,20,"ROOF_1_2"],[2,20,"ROOF_1_2"],[1,18,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"]]),
+  "06": pldInverter(162.8,[[2,20,"ROOF_1_2"],[2,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[1,20,"ROOF_1_2"],[2,16,"ROOF_1_2"],[1,16,"ROOF_1_2"],[1,15,"ROOF_1_2"],[2,16,"ROOF_2_1"],[1,16,"ROOF_2_1"],[1,15,"ROOF_2_1"],[2,15,"ROOF_2_1"]]),
+  "07": pldInverter(154,[[2,20,"ROOF_2_1"],[2,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"]]),
+  "08": pldInverter(154,[[2,20,"ROOF_2_1"],[2,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"]]),
+  "09": pldInverter(154,[[2,20,"ROOF_2_1"],[2,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"],[1,20,"ROOF_2_1"]]),
+};
+
 export const totals = {
   solarEnergyMwh: 6.779,
   inverterEnergyMwh: 6.811,

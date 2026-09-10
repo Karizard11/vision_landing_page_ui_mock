@@ -17,8 +17,9 @@ import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { portfolioSites, portfolioTotals, type PortfolioNode, type PortfolioSite } from "@/lib/portfolio-data";
-import { inverterDcSeries, inverterStack, inverterStringTelemetry, inverterSummary, meters, powerSeries, site, totals } from "@/lib/precool-data";
+import { inverterConfiguration, inverterDcSeries, inverterMpptTelemetry, inverterStack, inverterSummary, meters, powerSeries, site, totals } from "@/lib/precool-data";
 
 type View =
   | { kind: "portfolio" }
@@ -205,16 +206,66 @@ function InverterTotalView({ navigate }: { navigate: Navigate }) {
 
 function SingleInverterView({ code }: { code: string }) {
   const inv = inverterSummary.find(item => item.code === code) ?? inverterSummary[0];
-  const telemetry = inverterStringTelemetry[inv.code] ?? inverterStringTelemetry["01"];
-  const stringTotal = telemetry.strings.reduce((sum,value) => sum + value.power,0);
+  const telemetry = inverterMpptTelemetry[inv.code] ?? inverterMpptTelemetry["01"];
+  const configuration = inverterConfiguration[inv.code] ?? inverterConfiguration["01"];
+  const telemetryByMppt = new Map(telemetry.strings.map(reading => [reading.channel,reading]));
+  const normalizedCurrents = configuration.mppts.map(item => (telemetryByMppt.get(item.mppt)?.current ?? 0) / item.connectedStrings).filter(value => value > 0).sort((a,b) => a-b);
+  const middle = Math.floor(normalizedCurrents.length/2);
+  const normalizedMedian = normalizedCurrents.length % 2 ? normalizedCurrents[middle] : (normalizedCurrents[middle-1]+normalizedCurrents[middle])/2;
+  const mppts = configuration.mppts.map(item => {
+    const reading = telemetryByMppt.get(item.mppt);
+    const normalizedCurrent = (reading?.current ?? 0) / item.connectedStrings;
+    const deviation = normalizedMedian ? (normalizedCurrent-normalizedMedian)/normalizedMedian*100 : 0;
+    return {...item,reading,normalizedCurrent,deviation};
+  });
+  const connectedStrings = mppts.flatMap(mppt => Array.from({length:mppt.connectedStrings},(_,index) => ({
+    id:`M${String(mppt.mppt).padStart(2,"0")}-S${index+1}`,
+    mppt:mppt.mppt,
+    current:mppt.normalizedCurrent,
+    voltage:mppt.reading?.voltage ?? 0,
+    power:(mppt.reading?.power ?? 0)/mppt.connectedStrings,
+    deviation:mppt.deviation,
+    panelsPerString:mppt.panelsPerString,
+    moduleType:mppt.moduleType,
+    section:mppt.section,
+    orientation:mppt.orientation,
+    tilt:mppt.tilt,
+    mountingType:mppt.mountingType,
+  })));
+  const mpptTotal = telemetry.strings.reduce((sum,value) => sum + value.power,0);
   const ratio = inv.peakDc ? inv.peakAc / inv.peakDc * 100 : 0;
-  const dcRatio = inv.peakAc ? inv.peakDc / inv.peakAc : 1;
-  const stringRatio = inv.peakAc ? stringTotal / inv.peakAc : 1;
-  const inverterSeries = inverterStack.map(row => { const ac = Number((row as unknown as Record<string,string|number>)[`i${inv.code}`]) || 0; return {time:row.time,ac,dc:ac*dcRatio,strings:ac*stringRatio}; });
-  const withinCount = telemetry.strings.filter(value => Math.abs(value.deviation) <= 7).length;
+  const mpptRatio = inv.peakDc ? mpptTotal / inv.peakDc : 1;
+  const inverterSeries = inverterStack.map(row => {
+    const ac = Number((row as unknown as Record<string,string|number>)[`i${inv.code}`]) || 0;
+    const dcRow = inverterDcSeries.find(value => value.time === row.time);
+    const irradianceRow = powerSeries.find(value => value.time === row.time);
+    const dc = Number((dcRow as unknown as Record<string,string|number>|undefined)?.[`i${inv.code}`]) || 0;
+    return {time:row.time,ac,dc,mppt:dc*mpptRatio,solcastGhi:irradianceRow?.ghi ?? 0};
+  });
+  const severity = (deviation: number) => deviation >= -7 ? "within" : deviation >= -15 ? "warning" : "alarm";
+  const withinCount = mppts.filter(value => value.deviation >= -7).length;
   return <><PageTitle title={`Inverter ${inv.code.padStart(3,"0")}`} subtitle={`PreCool Cold Storage | ${Number(inv.code) <= 6 ? "PVDB 1" : "PVDB 2"} | ${inv.id} | ${inv.model}`}/><div className="kpi-grid meter-four-kpis"><Kpi icon={Gauge} label="AC power" value={num(inv.peakAc,1)} unit="kW" note="day peak" delta="active" tone="green" bars/><Kpi icon={Zap} label="Energy today" value={num(inv.energy,1)} unit="kWh" note="E_DAY register" bars/><Kpi icon={Activity} label="Conversion" value={num(ratio,1)} unit="%" note="peak AC ÷ DC" tone="green" bars/><Kpi icon={Database} label="Cumulative energy" value={num(inv.cumulative/1000,1)} unit="MWh" note="E_TOTAL register" bars/></div>
-    <div className="inverter-detail-row"><ChartPanel title="Actual against modelled output" hint="AC, DC and string sum"><ResponsiveContainer width="100%" height="100%"><AreaChart data={inverterSeries} margin={chartMargin}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Area dataKey="dc" name="DC power" stroke="#f0ab40" fill="#f0ab4025"/><Line dataKey="ac" name="AC power" stroke="#ef654b" strokeWidth={2} dot={false}/><Line dataKey="strings" name="String sum" stroke="#235f69" strokeDasharray="4 3" dot={false}/></AreaChart></ResponsiveContainer></ChartPanel>
-      <article className="panel string-status"><div className="string-telemetry-head"><div><strong>String telemetry</strong><span>current, voltage and power · deviation from array median</span></div><code>median {num(telemetry.medianCurrent,1)} A</code></div><div className="string-tile-grid">{telemetry.strings.map(string => { const severity = Math.abs(string.deviation) <= 7 ? "within" : Math.abs(string.deviation) <= 15 ? "warning" : "alarm"; return <div className={`string-tile ${severity}`} key={string.channel}><div className="string-tile-top"><span>S{String(string.channel).padStart(2,"0")}</span><em>{string.deviation >= 0 ? "+" : ""}{num(string.deviation,1)}%</em></div><strong>{num(string.current,1)}<small>A</small></strong><div className="string-electrical"><span>{num(string.voltage,0)}<small>V</small></span><b>{num(string.power,2)}<small>kW</small></b></div></div>; })}</div><div className="string-telemetry-summary"><div className="string-legend"><span><i className="within"/>within 7%</span><span><i className="warning"/>7–15% from median</span><span><i className="alarm"/>over 15% from median</span></div><code>{num(stringTotal,1)} kW across {telemetry.strings.length} strings</code></div><p className="string-note">{withinCount === telemetry.strings.length ? "All strings matched. This inverter is tracking its siblings." : `${withinCount} of ${telemetry.strings.length} strings are within 7% of the array median at the selected peak interval.`}</p><div className="inverter-metadata"><div><span>PLD model ID</span><strong>INVERTER_{inv.code}</strong></div><div><span>Configured DC</span><strong>{num(site.capacityKwp/inverterSummary.length,2)} kWp</strong></div><div><span>MPPT / strings</span><strong>12 / {telemetry.strings.length}</strong></div><div><span>PVDB / source</span><strong>{Number(inv.code) <= 6 ? "PVDB 1" : "PVDB 2"} · VCOM</strong></div></div></article></div>
+    <div className="inverter-detail-row"><ChartPanel title="Actual against modelled output" hint="power (kW) · irradiance (W/m²) · site sensor unavailable"><ResponsiveContainer width="100%" height="100%"><ComposedChart data={inverterSeries} margin={{...chartMargin,right:4}}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false}/><YAxis yAxisId="power" axisLine={false} tickLine={false}/><YAxis yAxisId="irradiance" orientation="right" axisLine={false} tickLine={false}/><Tooltip/><Legend wrapperStyle={{fontSize:8}}/><Area yAxisId="power" dataKey="dc" name="DC power" stroke="#f0ab40" fill="#f0ab4025"/><Line yAxisId="power" dataKey="ac" name="AC power" stroke="#ef654b" strokeWidth={2} dot={false}/><Line yAxisId="power" dataKey="mppt" name="MPPT DC sum" stroke="#235f69" strokeDasharray="4 3" dot={false}/><Line yAxisId="irradiance" dataKey="solcastGhi" name="Solcast GHI" stroke="#8157b5" strokeWidth={1.6} strokeDasharray="5 3" dot={false}/></ComposedChart></ResponsiveContainer></ChartPanel>
+      <article className="panel string-status">
+        <Tabs defaultValue="mppt" className="telemetry-tabs">
+          <div className="string-telemetry-head">
+            <div className="telemetry-heading"><strong>DC telemetry</strong><span>VCOM MPPT readings · PLD string allocation</span></div>
+            <TabsList><TabsTrigger value="mppt">MPPT ({configuration.mpptCount})</TabsTrigger><TabsTrigger value="strings">Strings ({configuration.connectedStrings}/{configuration.inputCapacity})</TabsTrigger></TabsList>
+          </div>
+          <TabsContent value="mppt" className="telemetry-tab-content">
+            <div className="telemetry-context"><span>Health compares current per connected string.</span><code>median {num(normalizedMedian,1)} A / string</code></div>
+            <div className="string-tile-grid">{mppts.map(mppt => <div className={`string-tile ${severity(mppt.deviation)}`} key={mppt.mppt}><div className="string-tile-top"><span>MPPT {String(mppt.mppt).padStart(2,"0")}</span><em>{mppt.deviation >= 0 ? "+" : ""}{num(mppt.deviation,1)}%</em></div><strong>{num(mppt.reading?.current ?? 0,1)}<small>A</small></strong><div className="string-electrical"><span>{num(mppt.reading?.voltage ?? 0,0)}<small>V</small></span><b>{num(mppt.reading?.power ?? 0,2)}<small>kW</small></b></div><div className="mppt-allocation">{mppt.connectedStrings} connected {mppt.connectedStrings === 1 ? "string" : "strings"} · {num(mppt.normalizedCurrent,1)} A/string</div></div>)}</div>
+            <div className="string-telemetry-summary"><div className="string-legend"><span><i className="within"/>within 7%</span><span><i className="warning"/>7–15% low</span><span><i className="alarm"/>over 15% low</span></div><code>{num(mpptTotal,1)} kW across {configuration.mpptCount} MPPTs</code></div>
+            <p className="string-note">{withinCount === configuration.mpptCount ? "All MPPTs are within 7% after normalising by their connected-string count." : `${withinCount} of ${configuration.mpptCount} MPPTs are within 7% after connected-string normalisation.`}</p>
+          </TabsContent>
+          <TabsContent value="strings" className="telemetry-tab-content">
+            <div className="telemetry-context"><span>Allocated from MPPT totals; the inverter does not expose separate input readings.</span><code>{configuration.connectedStrings} connected · {configuration.inputCapacity} capacity</code></div>
+            <div className="string-config-grid">{connectedStrings.map(string => <div className={`string-tile string-config-card ${severity(string.deviation)}`} key={string.id}><div className="string-tile-top"><span>{string.id}</span><em>allocated</em></div><strong>{num(string.current,1)}<small>A</small></strong><div className="string-electrical"><span>{num(string.voltage,0)}<small>V</small></span><b>{num(string.power,2)}<small>kW</small></b></div><dl><div><dt>Area</dt><dd>{string.section}</dd></div><div><dt>Array</dt><dd>{num(string.orientation,0)}° az · {num(string.tilt,0)}° tilt</dd></div><div><dt>Build</dt><dd>{string.panelsPerString} × {string.moduleType}</dd></div><div><dt>Mount</dt><dd>{string.mountingType.replace("_"," ")}</dd></div></dl></div>)}</div>
+            <p className="string-note">String current and power are equal allocations of each measured MPPT total. Roof, orientation, tilt and module counts come from the PLD contract configuration.</p>
+          </TabsContent>
+        </Tabs>
+        <div className="inverter-metadata"><div><span>PLD model ID</span><strong>INVERTER_{inv.code}</strong></div><div><span>Configured DC</span><strong>{num(configuration.configuredDcKwp,2)} kWp</strong></div><div><span>MPPT / connected strings</span><strong>{configuration.mpptCount} / {configuration.connectedStrings}</strong></div><div><span>Input capacity / source</span><strong>{configuration.inputCapacity} · PLD + VCOM</strong></div></div>
+      </article></div>
     <article className="panel event-table"><div><strong>Time</strong><strong>Code</strong><strong>Event</strong><strong>Duration</strong></div><div><span>06:12</span><span>S-00001</span><span>Grid connect - start complete</span><span>—</span></div><div><span>18:52</span><span>S-00001</span><span>Night shutdown</span><span>—</span></div></article></>;
 }
 
