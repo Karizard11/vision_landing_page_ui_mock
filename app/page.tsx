@@ -1,5 +1,5 @@
-import { EnergyDashboard } from "@/components/energy-dashboard";
+import { MockEnergyDashboard } from "@/components/mock-energy-dashboard";
 
 export default function Home() {
-  return <EnergyDashboard />;
+  return <MockEnergyDashboard />;
 }
