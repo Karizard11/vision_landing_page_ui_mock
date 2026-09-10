@@ -22,7 +22,7 @@ app = Flask(__name__)
 SYSTEM_KEY = "5ID4A"
 CAPACITY_KWP = 1851.33
 TARIFF = 0.88
-MAX_RANGE_DAYS = 31
+MAX_RANGE_DAYS = 3660
 EXPECTED_METER_READINGS = 288
 EXPECTED_INVERTER_READINGS = 288
 METER_LABELS = {
@@ -115,6 +115,20 @@ def date_keys(start_day: date, end_day: date) -> list[str]:
     ]
 
 
+def period_granularity(day_count: int) -> str:
+    if day_count <= 1:
+        return "5min"
+    if day_count <= 4:
+        return "30min"
+    if day_count <= 14:
+        return "hour"
+    if day_count <= 31:
+        return "day"
+    if day_count <= 366:
+        return "month"
+    return "year"
+
+
 def available_channels(cursor) -> list[int]:
     cursor.execute("DESCRIBE vcom_inverter_data")
     current: set[int] = set()
@@ -198,21 +212,21 @@ def query_doris(start: datetime, end: datetime) -> dict[str, Any]:
                     if timestamp and timestamp.date() == latest_inverter_day:
                         latest_groups[str(row.get("inverter_id"))].append(row)
 
-            peak_pairs: list[tuple[str, datetime]] = []
+            latest_pairs: list[tuple[str, datetime]] = []
             for inverter_id, rows in latest_groups.items():
-                peak = max(rows, key=lambda row: finite_number(row.get("P_AC")) or -1)
-                peak_pairs.append((inverter_id, peak["timestamp"]))
+                latest = max(rows, key=lambda row: row["timestamp"])
+                latest_pairs.append((inverter_id, latest["timestamp"]))
 
             telemetry_rows: list[dict[str, Any]] = []
-            if peak_pairs and channels:
+            if latest_pairs and channels:
                 conditions = " OR ".join(
-                    ["(inverter_id = %s AND timestamp = %s)"] * len(peak_pairs)
+                    ["(inverter_id = %s AND timestamp = %s)"] * len(latest_pairs)
                 )
                 channel_select = ", ".join(
                     [f"I_DC{channel}, U_DC{channel}" for channel in channels]
                 )
                 pair_params: list[Any] = []
-                for inverter_id, timestamp in peak_pairs:
+                for inverter_id, timestamp in latest_pairs:
                     pair_params.extend([inverter_id, timestamp])
                 telemetry_rows = select_rows(
                     cursor,
@@ -231,6 +245,483 @@ def query_doris(start: datetime, end: datetime) -> dict[str, Any]:
         "solcast": solcast_rows,
         "sensors": sensor_rows,
         "telemetry": telemetry_rows,
+    }
+
+
+def as_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    return datetime.fromisoformat(str(value))
+
+
+def channel_values(row: dict[str, Any], channels: list[int], power_is_energy: bool = False) -> list[dict[str, Any]]:
+    values: list[dict[str, Any]] = []
+    for channel in channels:
+        current = finite_number(row.get(f"I_DC{channel}"))
+        voltage = finite_number(row.get(f"U_DC{channel}"))
+        power = finite_number(row.get(f"P_DC{channel}"))
+        if power is None and current is not None and voltage is not None:
+            power = current * voltage / 1000
+        if current is None and voltage is None and power is None:
+            continue
+        values.append({
+            "channel": channel,
+            "current": rounded(current, 3),
+            "voltage": rounded(voltage, 3),
+            "power": rounded(power, 6 if power_is_energy else 3),
+        })
+    return values
+
+
+def telemetry_series_from_raw(
+    rows: list[dict[str, Any]],
+    channels: list[int],
+    granularity: str,
+    day_count: int,
+) -> list[dict[str, Any]]:
+    bucket_minutes = {"5min": 5, "30min": 30, "hour": 60}[granularity]
+    grouped: dict[datetime, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        timestamp = as_datetime(row["timestamp"])
+        minute_of_day = timestamp.hour * 60 + timestamp.minute
+        start_minute = minute_of_day - minute_of_day % bucket_minutes
+        bucket = timestamp.replace(
+            hour=start_minute // 60,
+            minute=start_minute % 60,
+            second=0,
+            microsecond=0,
+        )
+        grouped[bucket].append(row)
+
+    series: list[dict[str, Any]] = []
+    for timestamp, bucket_rows in sorted(grouped.items()):
+        combined: dict[str, Any] = {}
+        for channel in channels:
+            currents = [
+                value for value in (finite_number(row.get(f"I_DC{channel}")) for row in bucket_rows)
+                if value is not None
+            ]
+            voltages = [
+                value for value in (finite_number(row.get(f"U_DC{channel}")) for row in bucket_rows)
+                if value is not None
+            ]
+            powers = [
+                current * voltage / 1000
+                for row in bucket_rows
+                if (current := finite_number(row.get(f"I_DC{channel}"))) is not None
+                and (voltage := finite_number(row.get(f"U_DC{channel}"))) is not None
+            ]
+            combined[f"I_DC{channel}"] = mean(currents)
+            combined[f"U_DC{channel}"] = mean(voltages)
+            combined[f"P_DC{channel}"] = mean(powers)
+        label = timestamp.strftime("%H:%M") if day_count == 1 else timestamp.strftime("%d %b %H:%M")
+        series.append({
+            "time": timestamp.isoformat(),
+            "label": label,
+            "channels": channel_values(combined, channels),
+        })
+    return series
+
+
+def telemetry_series_from_daily(
+    rows: list[dict[str, Any]],
+    channels: list[int],
+    granularity: str,
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[int, ...], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        timestamp = as_datetime(row["bucket_time"])
+        if granularity == "day":
+            key = (timestamp.year, timestamp.month, timestamp.day)
+        elif granularity == "month":
+            key = (timestamp.year, timestamp.month)
+        else:
+            key = (timestamp.year,)
+        grouped[key].append(row)
+
+    series: list[dict[str, Any]] = []
+    for key, bucket_rows in sorted(grouped.items()):
+        if granularity == "day":
+            timestamp = datetime(key[0], key[1], key[2])
+            label = timestamp.strftime("%d %b")
+        elif granularity == "month":
+            timestamp = datetime(key[0], key[1], 1)
+            label = timestamp.strftime("%b %Y")
+        else:
+            timestamp = datetime(key[0], 1, 1)
+            label = str(key[0])
+        combined: dict[str, Any] = {}
+        for channel in channels:
+            weights = [int(row.get("sample_count") or 0) for row in bucket_rows]
+            total_weight = sum(weights)
+            for prefix in ("I", "U"):
+                values = [
+                    (finite_number(row.get(f"{prefix}_DC{channel}")), weight)
+                    for row, weight in zip(bucket_rows, weights)
+                ]
+                measured = [(value, weight) for value, weight in values if value is not None]
+                combined[f"{prefix}_DC{channel}"] = (
+                    sum(value * weight for value, weight in measured) / sum(weight for _, weight in measured)
+                    if measured and total_weight
+                    else None
+                )
+            combined[f"P_DC{channel}"] = sum(
+                finite_number(row.get(f"P_DC{channel}")) or 0 for row in bucket_rows
+            )
+        series.append({
+            "time": timestamp.isoformat(),
+            "label": label,
+            "channels": channel_values(combined, channels, power_is_energy=True),
+        })
+    return series
+
+
+def query_inverter_telemetry(
+    start_day: date,
+    end_day: date,
+    start: datetime,
+    end: datetime,
+    requested_code: str,
+) -> dict[str, Any]:
+    day_count = (end_day - start_day).days + 1
+    granularity = period_granularity(day_count)
+    with doris_connection() as connection:
+        with connection.cursor() as cursor:
+            channels = available_channels(cursor)
+            metadata = select_rows(
+                cursor,
+                """
+                SELECT inverter_id, inverter_name
+                FROM vcom_inverters
+                WHERE system_key = %s
+                """,
+                (SYSTEM_KEY,),
+            )
+            matched = next(
+                (
+                    row for row in metadata
+                    if inverter_code(row.get("inverter_name"), row.get("inverter_id")) == requested_code
+                ),
+                None,
+            )
+            if not matched:
+                raise ValueError(f"unknown inverter code {requested_code}")
+            inverter_id = str(matched["inverter_id"])
+            channel_select = ", ".join(
+                [f"I_DC{channel}, U_DC{channel}" for channel in channels]
+            )
+            latest_rows = select_rows(
+                cursor,
+                f"""
+                SELECT timestamp, {channel_select}
+                FROM vcom_inverter_data
+                WHERE system_key = %s AND inverter_id = %s
+                  AND timestamp >= %s AND timestamp < %s
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (SYSTEM_KEY, inverter_id, start, end),
+            )
+
+            if granularity in {"5min", "30min", "hour"}:
+                rows = select_rows(
+                    cursor,
+                    f"""
+                    SELECT timestamp, {channel_select}
+                    FROM vcom_inverter_data
+                    WHERE system_key = %s AND inverter_id = %s
+                      AND timestamp >= %s AND timestamp < %s
+                    ORDER BY timestamp
+                    """,
+                    (SYSTEM_KEY, inverter_id, start, end),
+                )
+                series = telemetry_series_from_raw(rows, channels, granularity, day_count)
+                power_unit = "kW"
+            else:
+                summary_select = ", ".join(
+                    [
+                        f"AVG(I_DC{channel}) AS I_DC{channel}, "
+                        f"AVG(U_DC{channel}) AS U_DC{channel}, "
+                        f"SUM(COALESCE(I_DC{channel}, 0) * COALESCE(U_DC{channel}, 0) / 1000 * 5 / 60) / 1000 AS P_DC{channel}"
+                        for channel in channels
+                    ]
+                )
+                rows = select_rows(
+                    cursor,
+                    f"""
+                    SELECT DATE(timestamp) AS bucket_time, COUNT(*) AS sample_count,
+                           {summary_select}
+                    FROM vcom_inverter_data
+                    WHERE system_key = %s AND inverter_id = %s
+                      AND timestamp >= %s AND timestamp < %s
+                    GROUP BY DATE(timestamp)
+                    ORDER BY DATE(timestamp)
+                    """,
+                    (SYSTEM_KEY, inverter_id, start, end),
+                )
+                series = telemetry_series_from_daily(rows, channels, granularity)
+                power_unit = "MWh"
+
+    latest = latest_rows[0] if latest_rows else None
+    return {
+        "range": {
+            "from": start_day.isoformat(),
+            "to": end_day.isoformat(),
+            "granularity": granularity,
+            "powerUnit": power_unit,
+        },
+        "inverterCode": requested_code,
+        "inverterId": inverter_id,
+        "snapshot": {
+            "capturedAt": as_datetime(latest["timestamp"]).isoformat(),
+            "channels": channel_values(latest, channels),
+        } if latest else None,
+        "series": series,
+    }
+
+
+def query_doris_daily(start: datetime, end: datetime) -> dict[str, Any]:
+    serial_placeholders = ", ".join(["%s"] * len(METER_LABELS))
+    with doris_connection() as connection:
+        with connection.cursor() as cursor:
+            meters = select_rows(
+                cursor,
+                f"""
+                SELECT DATE(timestamp) AS bucket_date, meter_serial,
+                       MIN(import_wh) AS import_start,
+                       MAX(import_wh) AS import_end,
+                       MIN(export_wh) AS export_start,
+                       MAX(export_wh) AS export_end,
+                       MAX(ABS(ptot)) AS peak_ptot,
+                       COUNT(*) AS readings
+                FROM electricity_energy_power
+                WHERE meter_serial IN ({serial_placeholders})
+                  AND timestamp >= %s AND timestamp < %s
+                GROUP BY DATE(timestamp), meter_serial
+                ORDER BY DATE(timestamp), meter_serial
+                """,
+                (*METER_LABELS.keys(), start, end),
+            )
+            inverters = select_rows(
+                cursor,
+                """
+                SELECT DATE(d.timestamp) AS bucket_date, d.inverter_id,
+                       i.inverter_name, i.inverter_model,
+                       MAX(d.P_AC) AS peak_ac,
+                       MAX(d.P_DC) AS peak_dc,
+                       MAX(d.E_DAY) AS energy_day,
+                       MAX(d.E_TOTAL) AS cumulative,
+                       COUNT(*) AS readings
+                FROM vcom_inverter_data d
+                LEFT JOIN vcom_inverters i
+                  ON d.system_key = i.system_key AND d.inverter_id = i.inverter_id
+                WHERE d.system_key = %s
+                  AND d.timestamp >= %s AND d.timestamp < %s
+                GROUP BY DATE(d.timestamp), d.inverter_id, i.inverter_name, i.inverter_model
+                ORDER BY DATE(d.timestamp), d.inverter_id
+                """,
+                (SYSTEM_KEY, start, end),
+            )
+            solcast = select_rows(
+                cursor,
+                """
+                SELECT DATE(period_end) AS bucket_date,
+                       SUM(ghi) * 0.5 / 1000 AS irradiation_kwh_m2,
+                       MAX(ghi) AS peak_ghi
+                FROM solcast_data
+                WHERE system_key = %s
+                  AND period_end >= %s AND period_end < %s
+                GROUP BY DATE(period_end)
+                ORDER BY DATE(period_end)
+                """,
+                (SYSTEM_KEY, start, end),
+            )
+            sensors = select_rows(
+                cursor,
+                """
+                SELECT DATE(timestamp) AS bucket_date,
+                       MAX(SRAD) AS peak_srad,
+                       COUNT(*) AS readings
+                FROM vcom_sensor_data
+                WHERE system_key = %s
+                  AND timestamp >= %s AND timestamp < %s
+                GROUP BY DATE(timestamp)
+                ORDER BY DATE(timestamp)
+                """,
+                (SYSTEM_KEY, start, end),
+            )
+            latest_rows = select_rows(
+                cursor,
+                """
+                SELECT MAX(timestamp) AS latest
+                FROM vcom_inverter_data
+                WHERE system_key = %s
+                  AND timestamp >= %s AND timestamp < %s
+                """,
+                (SYSTEM_KEY, start, end),
+            )
+    return {
+        "meters": meters,
+        "inverters": inverters,
+        "solcast": solcast,
+        "sensors": sensors,
+        "latest": latest_rows[0].get("latest") if latest_rows else None,
+    }
+
+
+def aggregate_daily_payload(
+    start_day: date,
+    end_day: date,
+    source: dict[str, Any],
+) -> dict[str, Any]:
+    meter_lookup = {
+        (as_datetime(row["bucket_date"]).date().isoformat(), str(row["meter_serial"])): row
+        for row in source["meters"]
+    }
+    inverter_lookup: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in source["inverters"]:
+        inverter_lookup[as_datetime(row["bucket_date"]).date().isoformat()].append(row)
+    solcast_lookup = {
+        as_datetime(row["bucket_date"]).date().isoformat(): row
+        for row in source["solcast"]
+    }
+    sensor_lookup = {
+        as_datetime(row["bucket_date"]).date().isoformat(): row
+        for row in source["sensors"]
+    }
+
+    days: dict[str, Any] = {}
+    availability_by_day: dict[str, float] = {}
+    for day in date_keys(start_day, end_day):
+        meter_summary: dict[str, Any] = {}
+        for serial, label in METER_LABELS.items():
+            row = meter_lookup.get((day, serial), {})
+            register_prefix = "export" if serial in SOLAR_SERIALS else "import"
+            imported = max(
+                (finite_number(row.get(f"{register_prefix}_end")) or 0)
+                - (finite_number(row.get(f"{register_prefix}_start")) or 0),
+                0,
+            )
+            meter_summary[label] = {
+                "energyMwh": rounded(imported / 1_000_000, 6) or 0,
+                "peakKw": rounded((finite_number(row.get("peak_ptot")) or 0) / 1000, 3) or 0,
+                "readings": int(row.get("readings") or 0),
+            }
+
+        inverter_summary = []
+        for row in inverter_lookup.get(day, []):
+            code = inverter_code(row.get("inverter_name"), row.get("inverter_id"))
+            inverter_summary.append({
+                "code": code,
+                "id": str(row.get("inverter_id") or ""),
+                "name": str(row.get("inverter_name") or code),
+                "model": str(row.get("inverter_model") or "Sungrow SG125CX-P2"),
+                "peakAc": rounded((finite_number(row.get("peak_ac")) or 0) / 1000, 3) or 0,
+                "peakDc": rounded((finite_number(row.get("peak_dc")) or 0) / 1000, 3) or 0,
+                "energy": rounded(finite_number(row.get("energy_day")) or 0, 3) or 0,
+                "cumulative": rounded(finite_number(row.get("cumulative")) or 0, 3) or 0,
+                "readings": int(row.get("readings") or 0),
+            })
+        inverter_summary.sort(key=lambda row: row["code"])
+
+        solar_energy_mwh = meter_summary["pvdb1"]["energyMwh"] + meter_summary["pvdb2"]["energyMwh"]
+        grid_import_mwh = sum(
+            meter_summary[label]["energyMwh"]
+            for label in ("incomer1", "incomer2", "incomer3")
+        )
+        grid_export_kwh = 0.0
+        for serial in INCOMER_SERIALS:
+            row = meter_lookup.get((day, serial), {})
+            grid_export_kwh += max(
+                (finite_number(row.get("export_end")) or 0)
+                - (finite_number(row.get("export_start")) or 0),
+                0,
+            ) / 1000
+        irradiation = finite_number(solcast_lookup.get(day, {}).get("irradiation_kwh_m2")) or 0
+        peak_ghi = finite_number(solcast_lookup.get(day, {}).get("peak_ghi")) or 0
+        inverter_energy_mwh = sum(item["energy"] for item in inverter_summary) / 1000
+        inverter_readings = sum(item["readings"] for item in inverter_summary)
+        inverter_availability = inverter_readings / (EXPECTED_INVERTER_READINGS * 12) * 100
+        availability_by_day[day] = inverter_availability
+        cumulative_values = [item["cumulative"] for item in inverter_summary if item["cumulative"]]
+        pr_estimate = (
+            solar_energy_mwh * 1000 / (CAPACITY_KWP * irradiation) * 100
+            if irradiation
+            else 0
+        )
+        ac_row: dict[str, Any] = {"time": "00:00"}
+        dc_row: dict[str, Any] = {"time": "00:00"}
+        for item in inverter_summary:
+            ac_row[f"i{item['code']}"] = item["peakAc"]
+            dc_row[f"i{item['code']}"] = item["peakDc"]
+        power = [{
+            "time": "00:00",
+            "pvdb1": meter_summary["pvdb1"]["peakKw"],
+            "pvdb2": meter_summary["pvdb2"]["peakKw"],
+            "incomer1": meter_summary["incomer1"]["peakKw"],
+            "incomer2": meter_summary["incomer2"]["peakKw"],
+            "incomer3": meter_summary["incomer3"]["peakKw"],
+            "solar": meter_summary["pvdb1"]["peakKw"] + meter_summary["pvdb2"]["peakKw"],
+            "grid": sum(meter_summary[label]["peakKw"] for label in ("incomer1", "incomer2", "incomer3")),
+            "inverter": sum(item["peakAc"] for item in inverter_summary) if inverter_summary else None,
+            "ghi": irradiation * 1000,
+            "sensorGhi": finite_number(sensor_lookup.get(day, {}).get("peak_srad")),
+            "expected": irradiation * CAPACITY_KWP * 0.78 / 1000,
+        }]
+        days[day] = {
+            "totals": {
+                "solarEnergyMwh": rounded(solar_energy_mwh, 6) or 0,
+                "inverterEnergyMwh": rounded(inverter_energy_mwh, 6) or 0,
+                "gridImportMwh": rounded(grid_import_mwh, 6) or 0,
+                "gridExportKwh": rounded(grid_export_kwh, 3) or 0,
+                "estimatedLoadMwh": rounded(
+                    grid_import_mwh + solar_energy_mwh - grid_export_kwh / 1000,
+                    6,
+                ) or 0,
+                "avoidedCostZar": rounded(solar_energy_mwh * 1000 * TARIFF, 2) or 0,
+                "cumulativeEnergyGwh": rounded(sum(cumulative_values) / 1_000_000, 6)
+                if cumulative_values else None,
+                "peakAcMw": rounded(sum(item["peakAc"] for item in inverter_summary) / 1000, 6) or 0,
+                "peakSolarKw": rounded(power[0]["solar"], 3) or 0,
+                "solcastPeakGhi": rounded(peak_ghi, 1) or 0,
+                "prEstimate": rounded(pr_estimate, 2) or 0,
+                "meterAvailability": rounded(
+                    sum(item["readings"] for item in meter_summary.values())
+                    / (EXPECTED_METER_READINGS * len(METER_LABELS))
+                    * 100,
+                    2,
+                ) or 0,
+                "inverterAvailability": rounded(inverter_availability, 2) or 0,
+                "inverterReadings": inverter_readings,
+            },
+            "meters": meter_summary,
+            "power": power,
+            "inverterSummary": inverter_summary,
+            "inverterAc": [ac_row] if inverter_summary else [],
+            "inverterDc": [dc_row] if inverter_summary else [],
+            "telemetry": {},
+        }
+
+    complete_days = [day for day, value in availability_by_day.items() if value >= 99.9]
+    partial_days = [day for day, value in availability_by_day.items() if 0 < value < 99.9]
+    latest = source.get("latest")
+    return {
+        "range": {
+            "from": start_day.isoformat(),
+            "to": end_day.isoformat(),
+            "latestCompleteInverterDay": complete_days[-1] if complete_days else None,
+            "partialInverterDay": partial_days[-1] if partial_days else None,
+            "partialInverterThrough": None,
+            "sensorAvailable": bool(source["sensors"]),
+            "powerIntervalMinutes": 60,
+            "meterSource": "electricity_energy_power",
+            "inverterSource": "vcom_inverter_data",
+            "irradianceSource": "solcast_data",
+            "dataAsOf": as_datetime(latest).isoformat() if latest else None,
+        },
+        "days": days,
     }
 
 
@@ -355,14 +846,14 @@ def aggregate_payload(start_day: date, end_day: date, source: dict[str, Any]) ->
                 if dc is not None:
                     dc_rows.setdefault(label, {"time": label})[f"i{code}"] = rounded(dc, 3)
 
-            peak = max(rows, key=lambda row: finite_number(row.get("P_AC")) or -1)
-            measured = telemetry_lookup.get((inverter_id, peak["timestamp"].isoformat()))
+            latest = rows[-1]
+            measured = telemetry_lookup.get((inverter_id, latest["timestamp"].isoformat()))
             channels = []
             if measured:
                 for channel in source["channels"]:
                     current = finite_number(measured.get(f"I_DC{channel}"))
                     voltage = finite_number(measured.get(f"U_DC{channel}"))
-                    if current is None or voltage is None or current <= 0 or voltage <= 0:
+                    if current is None or voltage is None:
                         continue
                     channels.append({
                         "channel": channel,
@@ -372,7 +863,7 @@ def aggregate_payload(start_day: date, end_day: date, source: dict[str, Any]) ->
                     })
             if channels:
                 telemetry[code] = {
-                    "capturedAt": peak["timestamp"].isoformat(),
+                    "capturedAt": latest["timestamp"].isoformat(),
                     "channels": channels,
                 }
 
@@ -494,8 +985,14 @@ def health():
 def precool():
     try:
         start_day, end_day, start, end = parse_range()
-        source = query_doris(start, end)
-        response = jsonify(aggregate_payload(start_day, end_day, source))
+        day_count = (end_day - start_day).days + 1
+        if day_count > 14:
+            source = query_doris_daily(start, end)
+            payload = aggregate_daily_payload(start_day, end_day, source)
+        else:
+            source = query_doris(start, end)
+            payload = aggregate_payload(start_day, end_day, source)
+        response = jsonify(payload)
         response.headers["Cache-Control"] = "private, no-store"
         return response
     except ValueError as error:
@@ -505,6 +1002,33 @@ def precool():
     except Exception:
         app.logger.exception("PreCool Doris query failed")
         return jsonify({"error": "Unable to query PreCool data from Doris."}), 500
+
+
+@app.get("/api/precool/telemetry")
+def precool_telemetry():
+    try:
+        start_day, end_day, start, end = parse_range()
+        requested_code = request.args.get("inverter", "").zfill(2)
+        if not re.fullmatch(r"\d{2}", requested_code):
+            raise ValueError("inverter must be a one or two digit code")
+        response = jsonify(
+            query_inverter_telemetry(
+                start_day,
+                end_day,
+                start,
+                end,
+                requested_code,
+            )
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 503
+    except Exception:
+        app.logger.exception("PreCool inverter telemetry query failed")
+        return jsonify({"error": "Unable to query inverter telemetry from Doris."}), 500
 
 
 if __name__ == "__main__":

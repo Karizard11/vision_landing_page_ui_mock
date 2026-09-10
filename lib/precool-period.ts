@@ -43,6 +43,23 @@ export type PrecoolTelemetryChannel = {
   power: number;
 };
 
+export type PrecoolTelemetryHistory = {
+  range: {
+    from: string;
+    to: string;
+    granularity: PeriodGranularity;
+    powerUnit: "kW" | "MWh";
+  };
+  inverterCode: string;
+  inverterId: string;
+  snapshot: { capturedAt: string; channels: PrecoolTelemetryChannel[] } | null;
+  series: Array<{
+    time: string;
+    label: string;
+    channels: PrecoolTelemetryChannel[];
+  }>;
+};
+
 export type PrecoolDay = {
   totals: {
     solarEnergyMwh: number;
@@ -110,6 +127,16 @@ function dayLabel(key: string) {
   return new Intl.DateTimeFormat("en-ZA", { day: "2-digit", month: "short", timeZone: "UTC" }).format(new Date(`${key}T00:00:00Z`));
 }
 
+function summaryKey(key: string, granularity: "month" | "year") {
+  return granularity === "month" ? key.slice(0,7) : key.slice(0,4);
+}
+
+function summaryLabel(key: string, granularity: "month" | "year") {
+  if (granularity === "year") return key;
+  return new Intl.DateTimeFormat("en-ZA", { month: "short", year: "numeric", timeZone: "UTC" })
+    .format(new Date(`${key}-01T00:00:00Z`));
+}
+
 type PowerField = "pvdb1" | "pvdb2" | "incomer1" | "incomer2" | "incomer3" | "solar" | "grid" | "ghi" | "expected";
 
 function intervalLabel(key: string, time: string, dayCount: number) {
@@ -126,9 +153,11 @@ function resamplePower(
   sourceIntervalMinutes: number,
 ) {
   const dayCount = selected.length;
-  if (granularity === "day") return selected.map(([key,day]) => {
+  if (granularity === "day" || granularity === "month" || granularity === "year") {
+    const daily = selected.map(([key,day]) => {
     const irradiation = day.power.reduce((sum,row) => sum + row.ghi * sourceIntervalMinutes / 60 / 1000,0);
     return {
+      date:key,
       time:dayLabel(key),
       pvdb1:day.meters.pvdb1.energyMwh,
       pvdb2:day.meters.pvdb2.energyMwh,
@@ -142,7 +171,30 @@ function resamplePower(
       sensorGhi:null,
       expected:irradiation*1851.33*0.78/1000,
     };
-  });
+    });
+    if (granularity === "day") return daily;
+    const grouped = new Map<string,typeof daily>();
+    daily.forEach(point => {
+      const key = summaryKey(point.date,granularity);
+      grouped.set(key,[...(grouped.get(key) ?? []),point]);
+    });
+    return [...grouped.entries()].map(([key,points]) => ({
+      time:summaryLabel(key,granularity),
+      pvdb1:points.reduce((sum,point) => sum+point.pvdb1,0),
+      pvdb2:points.reduce((sum,point) => sum+point.pvdb2,0),
+      incomer1:points.reduce((sum,point) => sum+point.incomer1,0),
+      incomer2:points.reduce((sum,point) => sum+point.incomer2,0),
+      incomer3:points.reduce((sum,point) => sum+point.incomer3,0),
+      solar:points.reduce((sum,point) => sum+point.solar,0),
+      grid:points.reduce((sum,point) => sum+point.grid,0),
+      inverter:points.some(point => point.inverter !== null)
+        ? points.reduce((sum,point) => sum+numberValue(point.inverter),0)
+        : null,
+      ghi:points.reduce((sum,point) => sum+point.ghi,0),
+      sensorGhi:null,
+      expected:points.reduce((sum,point) => sum+point.expected,0),
+    }));
+  }
 
   const targetMinutes = periodBucketMinutes(granularity) ?? sourceIntervalMinutes;
   const pointsPerBucket = Math.max(1,Math.round(targetMinutes/sourceIntervalMinutes));
@@ -177,11 +229,28 @@ function resampleInverters(
   field: "inverterAc" | "inverterDc",
   granularity: PeriodGranularity,
 ) {
-  if (granularity === "day") {
+  if (granularity === "day" || granularity === "month" || granularity === "year") {
     const summaryField = field === "inverterAc" ? "peakAc" : "peakDc";
-    return selected.map(([key,day]) => {
+    if (granularity === "day") return selected.map(([key,day]) => {
       const row: Record<string,string|number> = {time:dayLabel(key)};
       day.inverterSummary.forEach(item => { row[`i${item.code}`] = numberValue(item[summaryField]); });
+      return row;
+    });
+    const grouped = new Map<string,Array<[string,PrecoolDay]>>();
+    selected.forEach(entry => {
+      const key = summaryKey(entry[0],granularity);
+      grouped.set(key,[...(grouped.get(key) ?? []),entry]);
+    });
+    return [...grouped.entries()].map(([key,entries]) => {
+      const row: Record<string,string|number> = {time:summaryLabel(key,granularity)};
+      inverterMetadata.forEach(metadata => {
+        const readings = entries.flatMap(([,day]) =>
+          day.inverterSummary
+            .filter(item => item.code === metadata.code)
+            .map(item => numberValue(item[summaryField]))
+        );
+        if (readings.length) row[`i${metadata.code}`] = Math.max(...readings);
+      });
       return row;
     });
   }
