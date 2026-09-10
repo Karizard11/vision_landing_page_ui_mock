@@ -30,7 +30,7 @@ body{margin:0;background:#dcdede;color:#0b4149;font-family:Arial,"Helvetica Neue
 button,input{font:inherit}
 button{color:inherit}
 
-[data-slot="sidebar-wrapper"]{height:100vh;max-width:1440px;margin:0 auto;background:#f1f4f4;overflow:hidden;box-shadow:0 0 0 1px #d7dddd}
+[data-slot="sidebar-wrapper"]{height:100vh;width:100%;max-width:none;margin:0;background:#f1f4f4;overflow:hidden;box-shadow:0 0 0 1px #d7dddd}
 .navigation-sidebar [data-slot="sidebar-container"]{border-right:1px solid #cbd8d9}
 .navigation-sidebar [data-slot="sidebar-inner"]{position:relative;display:block;overflow:hidden;background:#fff;color:#0b4149}
 .group[data-collapsible="icon"] .white-navigation{display:none}
