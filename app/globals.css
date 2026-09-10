@@ -64,7 +64,7 @@ button{color:inherit}
 .provider-row:hover,.site-tree-row:hover,.node-row:hover,.provider-row.active,.site-tree-row.active,.node-row.active{background:#d6e1e2;color:#073f47}
 .provider-row.active,.site-tree-row.active,.node-row.active{font-weight:700}
 .site-tree-row .rotated{transform:rotate(90deg)}
-.inverter-node{padding-left:33px!important}.inverter-unit{padding-left:47px!important}
+.inverter-node,.inverter-unit{position:relative}
 
 .application-main{min-width:0;background:#f1f4f4;overflow:hidden}
 .top-bar{height:40px;display:grid;grid-template-columns:minmax(240px,1fr) minmax(190px,310px) minmax(360px,1fr);align-items:center;gap:14px;padding:0 22px;border-bottom:1px solid #ccd8d9;background:#fff}
