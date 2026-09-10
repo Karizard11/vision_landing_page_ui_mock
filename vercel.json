@@ -1,5 +1,31 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "nextjs",
-  "buildCommand": "npm run build:vercel"
+  "services": {
+    "frontend": {
+      "root": ".",
+      "framework": "nextjs",
+      "buildCommand": "npm run build:vercel",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "backend",
+          "format": "url",
+          "env": "DORIS_API_BASE_URL"
+        }
+      ]
+    },
+    "backend": {
+      "root": "backend",
+      "entrypoint": "app:app",
+      "framework": "flask"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "frontend"
+      }
+    }
+  ]
 }

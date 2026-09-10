@@ -20,6 +20,7 @@ import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger } from "@/compon
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { contractSiteLabel, isVirtualTotalNode, portfolioSites, siteNavigationNodes, type PortfolioNavigationNode, type PortfolioNode, type PortfolioSite } from "@/lib/portfolio-data";
 import { inverterConfiguration, inverterSummary as inverterMetadata, site, type InverterElectricalConfig } from "@/lib/precool-data";
+import { buildInverterEnergySeries, buildInverterHeatmap } from "@/lib/inverter-analytics";
 import { DEFAULT_PRECOOL_DATE, getPrecoolPeriod, type PrecoolDataset, type PrecoolPeriod, type PrecoolTelemetryHistory } from "@/lib/precool-period";
 import { periodResolutionLabel, periodUsesBars } from "@/lib/period-resolution";
 
@@ -315,15 +316,50 @@ function MeterView({ item, node, navigate, period }: { item: PortfolioSite; node
   </>;
 }
 
+function heatmapColour(intensity: number | null) {
+  if (intensity === null) return "#e4e9ea";
+  const hue = 3 + intensity * 45;
+  const lightness = 34 + intensity * 50;
+  return `hsl(${hue} 92% ${lightness}%)`;
+}
+
+function InverterHeatmap({ period }: { period: PrecoolPeriod }) {
+  const heatmap = buildInverterHeatmap(period);
+  const pointCount = period.inverterAc.length;
+  const tickIndexes = new Set([0,.25,.5,.75,1].map(value => Math.round(Math.max(0,pointCount-1)*value)));
+  const resolution = periodResolutionLabel(period.granularity);
+  const summary = periodUsesBars(period.granularity);
+  if (!pointCount || heatmap.maximum === 0) return <article className="panel inverter-heatmap"><div className="panel-head"><strong>Inverter heatmap</strong><span>{resolution} AC output</span></div><div className="heatmap-empty">No inverter output was returned for this selection.</div></article>;
+  return <article className="panel inverter-heatmap">
+    <div className="panel-head"><strong>Inverter heatmap</strong><span>{selectedPeriodLabel(period)} · {resolution} · {summary ? "peak AC power" : "AC power"} (kW)</span></div>
+    <div className="heatmap-scroll"><div className="heatmap-table" style={{minWidth:Math.max(760,pointCount*5+78)}}>
+      {heatmap.rows.map(row => <div className="heatmap-row" key={row.code}>
+        <strong>Inv {row.code}</strong>
+        <div className="heatmap-cells" style={{gridTemplateColumns:`repeat(${pointCount},minmax(4px,1fr))`}}>
+          {row.cells.map((cell,index) => <i key={`${row.code}-${index}`} style={{background:heatmapColour(cell.intensity)}} title={`Inverter ${row.code} · ${cell.time} · ${cell.value === null ? "no reading" : `${num(cell.value,1)} kW`}`}/>) }
+        </div>
+      </div>)}
+      <div className="heatmap-axis"><span/><div style={{gridTemplateColumns:`repeat(${pointCount},minmax(4px,1fr))`}}>{period.inverterAc.map((point,index) => <small key={`${String(point.time)}-${index}`}>{tickIndexes.has(index) ? String(point.time) : ""}</small>)}</div></div>
+    </div></div>
+    <div className="heatmap-legend"><span>AC output (kW)</span><i/><small>0</small><small>{num(heatmap.maximum/2,0)}</small><small>{num(heatmap.maximum,0)}</small><em>Grey = no reading</em></div>
+  </article>;
+}
+
 function InverterTotalView({ navigate, period }: { navigate: Navigate; period: PrecoolPeriod }) {
   const acVisibility = useChartSeriesVisibility(10);
   const dcVisibility = useChartSeriesVisibility(10);
+  const energyVisibility = useChartSeriesVisibility(10);
   const daily = periodUsesBars(period.granularity);
   const chartUnit = daily ? periodResolutionLabel(period.granularity) + " peak power (kW)" : periodResolutionLabel(period.granularity) + " power (kW)";
+  const energyData = buildInverterEnergySeries(period);
+  const energyUnit = daily ? "MWh" : "kWh";
+  const resolution = periodResolutionLabel(period.granularity);
   const reporting = period.inverterSummary.filter(item => item.hasData).length;
   return <><PageTitle title="Inverter total" subtitle={`PreCool Cold Storage | Solar Total | ${period.inverterSummary.length} Sungrow SG125CX-P2 inverters`}/><CoverageNotice period={period}/><div className="kpi-grid meter-four-kpis"><Kpi icon={Gauge} label="AC peak" value={period.totals.inverterReadings ? num(period.totals.peakAcMw,3) : "—"} unit={period.totals.inverterReadings ? "MW" : undefined} note="Summed inverter output" delta={period.totals.inverterReadings ? "measured" : undefined} tone={period.totals.inverterReadings ? "green" : undefined}/><Kpi icon={Zap} label="Energy" value={period.totals.inverterReadings ? num(period.totals.inverterEnergyMwh,3) : "—"} unit={period.totals.inverterReadings ? "MWh" : undefined} note={selectedPeriodLabel(period)}/><Kpi icon={Database} label="Cumulative energy" value={period.totals.cumulativeEnergyGwh !== null ? num(period.totals.cumulativeEnergyGwh,3) : "—"} unit={period.totals.cumulativeEnergyGwh !== null ? "GWh" : undefined} note="Latest E_TOTAL in selection"/><Kpi icon={Activity} label="Availability" value={num(period.totals.inverterAvailability,1)} unit="%" note={`${reporting} / 12 units · ${period.totals.inverterReadings.toLocaleString("en-ZA")} readings`} delta={period.inverterCoverage === "complete" ? "online" : "partial"} tone={period.inverterCoverage === "complete" ? "green" : "amber"}/></div>
     <ChartPanel title="All inverter power" hint={`AC · ${chartUnit}`}><ResponsiveContainer width="100%" height="100%">{daily ? <BarChart data={period.inverterAc} margin={chartMargin}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Legend {...acVisibility.legendProps}/>{period.inverterSummary.map((inv,index) => <Bar key={inv.code} dataKey={`i${inv.code}`} name={`Inv ${inv.code}`} fill={inverterColours[index]} hide={acVisibility.isHidden(`i${inv.code}`)}/>)}</BarChart> : <LineChart data={period.inverterAc} margin={chartMargin}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Legend {...acVisibility.legendProps}/>{period.inverterSummary.map((inv,index) => <Line key={inv.code} dataKey={`i${inv.code}`} name={`Inv ${inv.code}`} stroke={inverterColours[index]} strokeWidth={1.8} dot={false} connectNulls={false} hide={acVisibility.isHidden(`i${inv.code}`)}/>)}</LineChart>}</ResponsiveContainer></ChartPanel>
     <ChartPanel title="All inverter DC power" hint={`P_DC · ${chartUnit}`}><ResponsiveContainer width="100%" height="100%">{daily ? <BarChart data={period.inverterDc} margin={chartMargin}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Legend {...dcVisibility.legendProps}/>{period.inverterSummary.map((inv,index) => <Bar key={inv.code} dataKey={`i${inv.code}`} name={`Inv ${inv.code}`} fill={inverterColours[index]} hide={dcVisibility.isHidden(`i${inv.code}`)}/>)}</BarChart> : <LineChart data={period.inverterDc} margin={chartMargin}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Legend {...dcVisibility.legendProps}/>{period.inverterSummary.map((inv,index) => <Line key={inv.code} dataKey={`i${inv.code}`} name={`Inv ${inv.code}`} stroke={inverterColours[index]} strokeWidth={1.8} dot={false} connectNulls={false} hide={dcVisibility.isHidden(`i${inv.code}`)}/>)}</LineChart>}</ResponsiveContainer></ChartPanel>
+    <ChartPanel title="Inverter energy" hint={`${resolution} interval energy and selected-range cumulative · ${energyUnit}`} className="inverter-energy-chart"><ResponsiveContainer width="100%" height="100%"><ComposedChart data={energyData} margin={{...chartMargin,right:4}}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false}/><YAxis yAxisId="interval" axisLine={false} tickLine={false}/><YAxis yAxisId="cumulative" orientation="right" axisLine={false} tickLine={false}/><Tooltip/><Legend {...energyVisibility.legendProps}/>{daily ? <Bar yAxisId="interval" dataKey="energy" name={`Interval energy (${energyUnit})`} fill="#ee9e42" maxBarSize={22} hide={energyVisibility.isHidden("energy")}/> : <Area yAxisId="interval" type="monotone" dataKey="energy" name={`Interval energy (${energyUnit})`} stroke="#ee9e42" fill="#f5c875" fillOpacity={.42} dot={false} hide={energyVisibility.isHidden("energy")}/>}<Line yAxisId="cumulative" type="monotone" dataKey="cumulative" name={`Cumulative (${energyUnit})`} stroke="#12616b" strokeWidth={2} dot={false} hide={energyVisibility.isHidden("cumulative")}/></ComposedChart></ResponsiveContainer></ChartPanel>
+    <InverterHeatmap period={period}/>
     <section className="all-meters"><div className="section-label"><strong>All Inverters ({period.inverterSummary.length})</strong><span>select a unit to view MPPT and strings</span></div><div className="inverter-list-grid">{period.inverterSummary.map((inv,index) => <button key={inv.code} className="inverter-summary-card" onClick={() => navigate({kind:"inverter",siteCode:"P0480",inverterCode:inv.code})}><div><i style={{background:inverterColours[index]}}/><strong>Inverter {inv.code.padStart(3,"0")}</strong><span className={inv.hasData ? "" : "no-data"}>{inv.hasData ? inv.availability >= 99.9 ? "Complete" : "Partial" : "No data"}</span></div><p>{inv.id} | {inv.model}</p><dl><div><dt>AC peak</dt><dd>{inv.hasData ? `${num(inv.peakAc,1)} kW` : "—"}</dd></div><div><dt>DC peak</dt><dd>{inv.hasData ? `${num(inv.peakDc,1)} kW` : "—"}</dd></div><div><dt>Energy</dt><dd>{inv.hasData ? `${num(inv.energy,1)} kWh` : "—"}</dd></div></dl></button>)}</div></section></>;
 }
 

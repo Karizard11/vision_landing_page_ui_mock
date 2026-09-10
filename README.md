@@ -24,6 +24,12 @@ npm run dev
 
 npm run dev starts the private Doris API on 127.0.0.1:8788 and the React application on http://localhost:5173. The date selector supports live day, week, and month-sized requests of up to 31 days.
 
+## Vercel deployment
+
+The repository is a two-service Vercel project: the Next.js interface is bound privately to the Flask Doris API. In Vercel, set the project Framework Preset to **Services** and add `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_DATABASE` as encrypted environment variables. Do not set `DORIS_API_BASE_URL`; Vercel injects the deployment-aware backend service URL from `vercel.json`.
+
+The Doris host must accept connections from the Vercel function region. If Doris is IP-restricted, use Vercel Secure Compute/static egress or expose the API through an approved HTTPS service rather than making credentials public.
+
 ## Prerequisites
 
 - Node.js `>=22.13.0`

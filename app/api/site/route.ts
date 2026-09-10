@@ -1,6 +1,7 @@
+import { dorisUpstream } from "@/lib/doris-upstream";
+
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const contractPattern = /^\d+$/;
-const defaultUpstream = "http://127.0.0.1:8788";
 
 function validDate(value: string | null) {
   if (!value || !datePattern.test(value)) return false;
@@ -16,7 +17,7 @@ export async function GET(request: Request) {
   if (!validDate(from) || !validDate(to) || !contractId || !contractPattern.test(contractId)) {
     return Response.json({ error: "from, to, and contract_id must be valid" }, { status: 400 });
   }
-  const upstream = new URL("/api/site", process.env.DORIS_API_BASE_URL || defaultUpstream);
+  const upstream = dorisUpstream("api/site");
   upstream.searchParams.set("from", from!);
   upstream.searchParams.set("to", to!);
   upstream.searchParams.set("contract_id", contractId);

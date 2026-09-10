@@ -1,6 +1,7 @@
+import { dorisUpstream } from "@/lib/doris-upstream";
+
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const inverterPattern = /^\d{1,2}$/;
-const defaultUpstream = "http://127.0.0.1:8788";
 
 function validDate(value: string | null) {
   if (!value || !datePattern.test(value)) return false;
@@ -20,8 +21,7 @@ export async function GET(request: Request) {
     );
   }
 
-  const upstreamBase = process.env.DORIS_API_BASE_URL || defaultUpstream;
-  const upstream = new URL("/api/precool/telemetry", upstreamBase);
+  const upstream = dorisUpstream("api/precool/telemetry");
   upstream.searchParams.set("from", from!);
   upstream.searchParams.set("to", to!);
   upstream.searchParams.set("inverter", inverter);

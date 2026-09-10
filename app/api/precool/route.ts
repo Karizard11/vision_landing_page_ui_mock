@@ -1,5 +1,6 @@
+import { dorisUpstream } from "@/lib/doris-upstream";
+
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
-const defaultUpstream = "http://127.0.0.1:8788";
 
 function validDate(value: string | null) {
   if (!value || !datePattern.test(value)) return false;
@@ -15,8 +16,7 @@ export async function GET(request: Request) {
     return Response.json({ error: "from and to must be valid YYYY-MM-DD dates" }, { status: 400 });
   }
 
-  const upstreamBase = process.env.DORIS_API_BASE_URL || defaultUpstream;
-  const upstream = new URL("/api/precool", upstreamBase);
+  const upstream = dorisUpstream("api/precool");
   upstream.searchParams.set("from", from!);
   upstream.searchParams.set("to", to!);
 

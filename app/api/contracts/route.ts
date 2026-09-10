@@ -1,7 +1,7 @@
-const defaultUpstream = "http://127.0.0.1:8788";
+import { dorisUpstream } from "@/lib/doris-upstream";
 
 export async function GET() {
-  const upstream = new URL("/api/contracts", process.env.DORIS_API_BASE_URL || defaultUpstream);
+  const upstream = dorisUpstream("api/contracts");
   try {
     const response = await fetch(upstream, {
       headers: { accept: "application/json" },

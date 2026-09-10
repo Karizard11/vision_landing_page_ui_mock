@@ -5,6 +5,7 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 const component = readFileSync(new URL("components/mock-energy-dashboard.tsx", root), "utf8");
 const packageJson = JSON.parse(readFileSync(new URL("package.json", root), "utf8"));
+const vercel = JSON.parse(readFileSync(new URL("vercel.json", root), "utf8"));
 
 test("every chart series can be toggled from its legend", () => {
   assert.match(component, /function useChartSeriesVisibility/);
@@ -18,10 +19,18 @@ test("the PreCool site overview stacks grid and solar supply", () => {
   assert.match(component, /stackId="site-supply"[^>]*dataKey="solar"/);
 });
 
-test("Vercel uses a native Next.js build", () => {
+test("Vercel deploys the Next.js UI and private Doris backend as bound services", () => {
   assert.equal(packageJson.scripts["build:vercel"], "next build");
   assert.ok(existsSync(new URL("vercel.json", root)));
-  const vercel = JSON.parse(readFileSync(new URL("vercel.json", root), "utf8"));
-  assert.equal(vercel.framework, "nextjs");
-  assert.equal(vercel.buildCommand, "npm run build:vercel");
+  assert.equal(vercel.services.frontend.framework,"nextjs");
+  assert.equal(vercel.services.frontend.buildCommand,"npm run build:vercel");
+  assert.equal(vercel.services.backend.root,"backend");
+  assert.equal(vercel.services.backend.entrypoint,"app:app");
+  assert.deepEqual(vercel.services.frontend.bindings,[{
+    type:"service",
+    service:"backend",
+    format:"url",
+    env:"DORIS_API_BASE_URL",
+  }]);
+  assert.ok(existsSync(new URL("backend/requirements.txt",root)));
 });
