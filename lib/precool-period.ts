@@ -1,4 +1,5 @@
 import { inverterSummary as inverterMetadata } from "@/lib/precool-data";
+import { periodBucketMinutes, periodGranularity, type PeriodGranularity } from "@/lib/period-resolution";
 
 export const DEFAULT_PRECOOL_DATE = "2026-08-22";
 
@@ -79,6 +80,7 @@ export type PrecoolDataset = {
     inverterSource: string;
     irradianceSource: string;
     dataAsOf: string | null;
+    powerIntervalMinutes?: number;
   };
   days: Record<string, PrecoolDay>;
 };
@@ -87,7 +89,7 @@ export type PrecoolPeriod = {
   from: string;
   to: string;
   dayCount: number;
-  granularity: "hour" | "day";
+  granularity: PeriodGranularity;
   totals: PrecoolDay["totals"];
   meters: Record<string, PrecoolMeterSnapshot>;
   power: PrecoolPowerPoint[];
@@ -108,34 +110,24 @@ function dayLabel(key: string) {
   return new Intl.DateTimeFormat("en-ZA", { day: "2-digit", month: "short", timeZone: "UTC" }).format(new Date(`${key}T00:00:00Z`));
 }
 
-export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string): PrecoolPeriod {
-  const start = from <= to ? from : to;
-  const end = from <= to ? to : from;
-  const selected = Object.entries(data.days).filter(([key]) => key >= start && key <= end);
-  const selectedDays = selected.map(([,day]) => day);
-  const dayCount = selectedDays.length;
-  const singleDay = dayCount === 1;
+type PowerField = "pvdb1" | "pvdb2" | "incomer1" | "incomer2" | "incomer3" | "solar" | "grid" | "ghi" | "expected";
 
-  const solarEnergyMwh = selectedDays.reduce((sum,day) => sum + day.totals.solarEnergyMwh,0);
-  const gridImportMwh = selectedDays.reduce((sum,day) => sum + day.totals.gridImportMwh,0);
-  const gridExportKwh = selectedDays.reduce((sum,day) => sum + day.totals.gridExportKwh,0);
-  const inverterEnergyMwh = selectedDays.reduce((sum,day) => sum + day.totals.inverterEnergyMwh,0);
-  const irradiationKwhM2 = selectedDays.reduce((sum,day) => sum + day.power.reduce((subtotal,row) => subtotal + row.ghi/1000,0),0);
-  const prEstimate = irradiationKwhM2 ? solarEnergyMwh*1000/(1851.33*irradiationKwhM2)*100 : 0;
-  const lastCumulative = [...selectedDays].reverse().map(day => day.totals.cumulativeEnergyGwh).find(value => value !== null) ?? null;
-  const inverterReadings = selectedDays.reduce((sum,day) => sum + day.totals.inverterReadings,0);
+function intervalLabel(key: string, time: string, dayCount: number) {
+  return dayCount === 1 ? time : `${dayLabel(key)} ${time}`;
+}
 
-  const meters = Object.fromEntries(meterKeys.map(key => {
-    const snapshots = selectedDays.map(day => day.meters[key]).filter(Boolean);
-    return [key,{
-      energyMwh:snapshots.reduce((sum,item) => sum + item.energyMwh,0),
-      peakKw:Math.max(0,...snapshots.map(item => item.peakKw)),
-      readings:snapshots.reduce((sum,item) => sum + item.readings,0),
-    }];
-  }));
+function averageRows(rows: PrecoolPowerPoint[], key: PowerField) {
+  return rows.reduce((sum,row) => sum + numberValue(row[key]),0) / rows.length;
+}
 
-  const power = singleDay ? selectedDays[0].power : selected.map(([key,day]) => {
-    const irradiation = day.power.reduce((sum,row) => sum + row.ghi/1000,0);
+function resamplePower(
+  selected: Array<[string,PrecoolDay]>,
+  granularity: PeriodGranularity,
+  sourceIntervalMinutes: number,
+) {
+  const dayCount = selected.length;
+  if (granularity === "day") return selected.map(([key,day]) => {
+    const irradiation = day.power.reduce((sum,row) => sum + row.ghi * sourceIntervalMinutes / 60 / 1000,0);
     return {
       time:dayLabel(key),
       pvdb1:day.meters.pvdb1.energyMwh,
@@ -151,6 +143,96 @@ export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string)
       expected:irradiation*1851.33*0.78/1000,
     };
   });
+
+  const targetMinutes = periodBucketMinutes(granularity) ?? sourceIntervalMinutes;
+  const pointsPerBucket = Math.max(1,Math.round(targetMinutes/sourceIntervalMinutes));
+  return selected.flatMap(([key,day]) => {
+    const buckets: PrecoolPowerPoint[] = [];
+    for (let index = 0; index < day.power.length; index += pointsPerBucket) {
+      const rows = day.power.slice(index,index+pointsPerBucket);
+      if (!rows.length) continue;
+      const inverterValues = rows.map(row => row.inverter).filter((value): value is number => typeof value === "number");
+      const sensorValues = rows.map(row => row.sensorGhi).filter((value): value is number => typeof value === "number");
+      buckets.push({
+        time:intervalLabel(key,rows[0].time,dayCount),
+        pvdb1:averageRows(rows,"pvdb1"),
+        pvdb2:averageRows(rows,"pvdb2"),
+        incomer1:averageRows(rows,"incomer1"),
+        incomer2:averageRows(rows,"incomer2"),
+        incomer3:averageRows(rows,"incomer3"),
+        solar:averageRows(rows,"solar"),
+        grid:averageRows(rows,"grid"),
+        inverter:inverterValues.length ? inverterValues.reduce((sum,value) => sum+value,0)/inverterValues.length : null,
+        ghi:averageRows(rows,"ghi"),
+        sensorGhi:sensorValues.length ? sensorValues.reduce((sum,value) => sum+value,0)/sensorValues.length : null,
+        expected:averageRows(rows,"expected"),
+      });
+    }
+    return buckets;
+  });
+}
+
+function resampleInverters(
+  selected: Array<[string,PrecoolDay]>,
+  field: "inverterAc" | "inverterDc",
+  granularity: PeriodGranularity,
+) {
+  if (granularity === "day") {
+    const summaryField = field === "inverterAc" ? "peakAc" : "peakDc";
+    return selected.map(([key,day]) => {
+      const row: Record<string,string|number> = {time:dayLabel(key)};
+      day.inverterSummary.forEach(item => { row[`i${item.code}`] = numberValue(item[summaryField]); });
+      return row;
+    });
+  }
+  const bucketMinutes = periodBucketMinutes(granularity) ?? 60;
+  return selected.flatMap(([key,day]) => {
+    const grouped = new Map<number,Array<Record<string,string|number>>>();
+    day[field].forEach(row => {
+      const [hours,minutes] = String(row.time).split(":").map(Number);
+      const bucket = Math.floor((hours*60+minutes)/bucketMinutes);
+      grouped.set(bucket,[...(grouped.get(bucket) ?? []),row]);
+    });
+    return [...grouped.entries()].sort(([left],[right]) => left-right).map(([,rows]) => {
+      const result: Record<string,string|number> = {time:intervalLabel(key,String(rows[0].time),selected.length)};
+      const keys = new Set(rows.flatMap(row => Object.keys(row).filter(value => value !== "time")));
+      keys.forEach(value => {
+        const readings = rows.map(row => row[value]).filter((reading): reading is number => typeof reading === "number");
+        if (readings.length) result[value] = readings.reduce((sum,reading) => sum+reading,0)/readings.length;
+      });
+      return result;
+    });
+  });
+}
+
+export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string): PrecoolPeriod {
+  const start = from <= to ? from : to;
+  const end = from <= to ? to : from;
+  const selected = Object.entries(data.days).filter(([key]) => key >= start && key <= end);
+  const selectedDays = selected.map(([,day]) => day);
+  const dayCount = selectedDays.length;
+  const granularity = periodGranularity(dayCount);
+  const sourceIntervalMinutes = data.range.powerIntervalMinutes ?? (selectedDays[0]?.power.length > 24 ? 5 : 60);
+
+  const solarEnergyMwh = selectedDays.reduce((sum,day) => sum + day.totals.solarEnergyMwh,0);
+  const gridImportMwh = selectedDays.reduce((sum,day) => sum + day.totals.gridImportMwh,0);
+  const gridExportKwh = selectedDays.reduce((sum,day) => sum + day.totals.gridExportKwh,0);
+  const inverterEnergyMwh = selectedDays.reduce((sum,day) => sum + day.totals.inverterEnergyMwh,0);
+  const irradiationKwhM2 = selectedDays.reduce((sum,day) => sum + day.power.reduce((subtotal,row) => subtotal + row.ghi*sourceIntervalMinutes/60/1000,0),0);
+  const prEstimate = irradiationKwhM2 ? solarEnergyMwh*1000/(1851.33*irradiationKwhM2)*100 : 0;
+  const lastCumulative = [...selectedDays].reverse().map(day => day.totals.cumulativeEnergyGwh).find(value => value !== null) ?? null;
+  const inverterReadings = selectedDays.reduce((sum,day) => sum + day.totals.inverterReadings,0);
+
+  const meters = Object.fromEntries(meterKeys.map(key => {
+    const snapshots = selectedDays.map(day => day.meters[key]).filter(Boolean);
+    return [key,{
+      energyMwh:snapshots.reduce((sum,item) => sum + item.energyMwh,0),
+      peakKw:Math.max(0,...snapshots.map(item => item.peakKw)),
+      readings:snapshots.reduce((sum,item) => sum + item.readings,0),
+    }];
+  }));
+
+  const power = resamplePower(selected,granularity,sourceIntervalMinutes);
 
   const inverterSummary = inverterMetadata.map(metadata => {
     const snapshots = selectedDays.map(day => day.inverterSummary.find(item => item.code === metadata.code)).filter((item): item is PrecoolInverterSnapshot => Boolean(item));
@@ -171,13 +253,8 @@ export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string)
     };
   });
 
-  const buildDailyInverterSeries = (field: "peakAc" | "peakDc") => selected.map(([key,day]) => {
-    const row: Record<string,string|number> = {time:dayLabel(key)};
-    day.inverterSummary.forEach(item => { row[`i${item.code}`] = numberValue(item[field]); });
-    return row;
-  });
-  const inverterAc = singleDay ? selectedDays[0].inverterAc : buildDailyInverterSeries("peakAc");
-  const inverterDc = singleDay ? selectedDays[0].inverterDc : buildDailyInverterSeries("peakDc");
+  const inverterAc = resampleInverters(selected,"inverterAc",granularity);
+  const inverterDc = resampleInverters(selected,"inverterDc",granularity);
   const telemetryEntry = [...selected].reverse().find(([,day]) => Object.keys(day.telemetry).length > 0);
   const telemetry = telemetryEntry?.[1].telemetry ?? {};
   const telemetryDate = telemetryEntry?.[0] ?? null;
@@ -195,7 +272,7 @@ export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string)
     from:start,
     to:end,
     dayCount,
-    granularity:singleDay ? "hour" : "day",
+    granularity,
     totals:{
       solarEnergyMwh,
       inverterEnergyMwh,

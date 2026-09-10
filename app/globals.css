@@ -2,6 +2,9 @@
 @import "tw-animate-css";
 @import "../vendor/shadcn-tailwind-4.13.0.css";
 
+.top-actions .date-navigation{flex:0 0 auto;min-width:238px}
+.top-actions .date-button{width:190px!important;min-width:190px!important;max-width:190px!important;flex-wrap:nowrap!important;overflow:hidden}
+.top-actions .date-button-label{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1}
 .telemetry-tabs .string-config-card{min-height:82px!important}
 
 :root{

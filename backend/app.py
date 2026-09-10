@@ -237,7 +237,7 @@ def query_doris(start: datetime, end: datetime) -> dict[str, Any]:
 def aggregate_payload(start_day: date, end_day: date, source: dict[str, Any]) -> dict[str, Any]:
     keys = date_keys(start_day, end_day)
     meter_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    meter_hour_values: dict[tuple[str, int, str], list[float]] = defaultdict(list)
+    meter_bucket_values: dict[tuple[str, int, str], list[float]] = defaultdict(list)
     for row in source["meters"]:
         timestamp = row["timestamp"]
         day = timestamp.date().isoformat()
@@ -245,22 +245,24 @@ def aggregate_payload(start_day: date, end_day: date, source: dict[str, Any]) ->
         meter_groups[(day, serial)].append(row)
         value = finite_number(row.get("ptot"))
         if value is not None:
-            meter_hour_values[(day, timestamp.hour, serial)].append(abs(value) / 1000)
+            bucket = timestamp.hour * 12 + timestamp.minute // 5
+            meter_bucket_values[(day, bucket, serial)].append(abs(value) / 1000)
 
     inverter_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    inverter_hour_values: dict[tuple[str, int, str, str], list[float]] = defaultdict(list)
+    inverter_bucket_values: dict[tuple[str, int, str, str], list[float]] = defaultdict(list)
     for row in source["inverters"]:
         timestamp = row["timestamp"]
         day = timestamp.date().isoformat()
         code = inverter_code(row.get("inverter_name"), row.get("inverter_id"))
         row["_code"] = code
         inverter_groups[(day, str(row["inverter_id"]))].append(row)
+        bucket = timestamp.hour * 12 + timestamp.minute // 5
         for field in ("P_AC", "P_DC"):
             value = finite_number(row.get(field))
             if value is not None:
-                inverter_hour_values[(day, timestamp.hour, code, field)].append(value / 1000)
+                inverter_bucket_values[(day, bucket, code, field)].append(value / 1000)
 
-    solcast_hour_values: dict[tuple[str, int], list[float]] = defaultdict(list)
+    solcast_bucket_values: dict[tuple[str, int], list[float]] = defaultdict(list)
     solcast_day_values: dict[str, list[float]] = defaultdict(list)
     for row in source["solcast"]:
         value = finite_number(row.get("ghi"))
@@ -268,16 +270,18 @@ def aggregate_payload(start_day: date, end_day: date, source: dict[str, Any]) ->
             continue
         timestamp = row["timestamp"]
         day = timestamp.date().isoformat()
-        solcast_hour_values[(day, timestamp.hour)].append(value)
+        bucket = timestamp.hour * 12 + timestamp.minute // 5
+        solcast_bucket_values[(day, bucket)].append(value)
         solcast_day_values[day].append(value)
 
-    sensor_hour_values: dict[tuple[str, int], list[float]] = defaultdict(list)
+    sensor_bucket_values: dict[tuple[str, int], list[float]] = defaultdict(list)
     for row in source["sensors"]:
         value = finite_number(row.get("SRAD"))
         if value is None or value <= 0:
             continue
         timestamp = row["timestamp"]
-        sensor_hour_values[(timestamp.date().isoformat(), timestamp.hour)].append(value)
+        bucket = timestamp.hour * 12 + timestamp.minute // 5
+        sensor_bucket_values[(timestamp.date().isoformat(), bucket)].append(value)
 
     telemetry_lookup = {
         (str(row["inverter_id"]), row["timestamp"].isoformat()): row
@@ -342,10 +346,10 @@ def aggregate_payload(start_day: date, end_day: date, source: dict[str, Any]) ->
                 "cumulative": rounded(cumulative_values[-1], 3) if cumulative_values else 0,
                 "readings": len(rows),
             })
-            for hour in range(4, 16):
-                ac = mean(inverter_hour_values[(day, hour, code, "P_AC")])
-                dc = mean(inverter_hour_values[(day, hour, code, "P_DC")])
-                label = f"{hour:02d}:00"
+            for bucket in range(288):
+                ac = mean(inverter_bucket_values[(day, bucket, code, "P_AC")])
+                dc = mean(inverter_bucket_values[(day, bucket, code, "P_DC")])
+                label = f"{bucket // 12:02d}:{bucket % 12 * 5:02d}"
                 if ac is not None:
                     ac_rows.setdefault(label, {"time": label})[f"i{code}"] = rounded(ac, 3)
                 if dc is not None:
@@ -374,20 +378,23 @@ def aggregate_payload(start_day: date, end_day: date, source: dict[str, Any]) ->
 
         inverter_summary.sort(key=lambda row: row["code"])
         power = []
-        for hour in range(24):
-            point: dict[str, Any] = {"time": f"{hour:02d}:00"}
+        for bucket in range(288):
+            point: dict[str, Any] = {
+                "time": f"{bucket // 12:02d}:{bucket % 12 * 5:02d}"
+            }
             for serial, label in METER_LABELS.items():
-                point[label] = rounded(mean(meter_hour_values[(day, hour, serial)]) or 0, 3) or 0
+                point[label] = rounded(mean(meter_bucket_values[(day, bucket, serial)]) or 0, 3) or 0
             point["solar"] = rounded(point["pvdb1"] + point["pvdb2"], 3) or 0
             point["grid"] = rounded(point["incomer1"] + point["incomer2"] + point["incomer3"], 3) or 0
             inverter_values = [
-                mean(inverter_hour_values[(day, hour, summary["code"], "P_AC")])
+                mean(inverter_bucket_values[(day, bucket, summary["code"], "P_AC")])
                 for summary in inverter_summary
             ]
             measured_inverters = [value for value in inverter_values if value is not None]
             point["inverter"] = rounded(sum(measured_inverters), 3) if measured_inverters else None
-            point["ghi"] = rounded(mean(solcast_hour_values[(day, hour)]) or 0, 1) or 0
-            point["sensorGhi"] = rounded(mean(sensor_hour_values[(day, hour)]), 1)
+            solcast_bucket = bucket - bucket % 6
+            point["ghi"] = rounded(mean(solcast_bucket_values[(day, solcast_bucket)]) or 0, 1) or 0
+            point["sensorGhi"] = rounded(mean(sensor_bucket_values[(day, bucket)]), 1)
             point["expected"] = rounded(point["ghi"] * CAPACITY_KWP * 0.78 / 1000, 3) or 0
             power.append(point)
 
@@ -459,7 +466,8 @@ def aggregate_payload(start_day: date, end_day: date, source: dict[str, Any]) ->
             "latestCompleteInverterDay": complete_days[-1] if complete_days else None,
             "partialInverterDay": partial_day,
             "partialInverterThrough": max(partial_timestamps).strftime("%H:%M") if partial_timestamps else None,
-            "sensorAvailable": bool(sensor_hour_values),
+            "sensorAvailable": bool(sensor_bucket_values),
+            "powerIntervalMinutes": 5,
             "meterSource": "electricity_energy_power",
             "inverterSource": "vcom_inverter_data",
             "irradianceSource": "solcast_data",
