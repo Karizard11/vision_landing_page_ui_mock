@@ -19,6 +19,7 @@ from contracts import (
     query_contract_source,
 )
 from reporting_financials import load_municipal_financials
+from site_financials import load_site_financials
 from contract_performance import query_performance_sources, build_contract_performance
 from time_context import SAST, QueryWindow, build_query_window, doris_utc_to_sast, sast_bucket_datetime
 
@@ -1104,6 +1105,28 @@ def contract_site():
         app.logger.exception("Contract site Doris query failed")
         return jsonify({"error": "Unable to query site data from Doris."}), 500
 
+
+
+@app.get("/api/site/financials")
+def contract_financials():
+    try:
+        window = parse_range()
+        contract_id = request.args.get("contract_id", "")
+        if not re.fullmatch(r"\d+", contract_id):
+            raise ValueError("contract_id must be numeric")
+        with doris_connection() as connection:
+            site = next((item for item in query_contract_catalog(connection)
+                         if item["contractId"] == contract_id), None)
+        if not site:
+            return jsonify({"error": "Contract is not in an available portfolio."}), 404
+        response = jsonify(load_site_financials(site, window))
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception:
+        app.logger.exception("Site financial calculation failed")
+        return jsonify({"error": "Unable to calculate site financials."}), 503
 
 @app.get("/api/site/performance")
 def contract_performance():

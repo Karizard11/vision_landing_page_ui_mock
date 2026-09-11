@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { SiteFinancialCards } from "@/components/site-financial-cards";
 import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, CalendarDays, Database, Gauge, SunMedium } from "lucide-react";
 import { Area, Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { isLoadNode, contractSiteLabel, type PortfolioSite } from "@/lib/portfolio-data";
@@ -111,6 +112,7 @@ export function SiteContractPerformance({site,from,to,fromTime,toTime,operationa
         <article><span>{(s!.varianceKwh??0)>=0?<ArrowUpRight/>:<ArrowDownRight/>}Energy variance</span><strong className={s!.varianceKwh==null?"":s!.varianceKwh>=0?"positive":"negative"}>{s!.varianceKwh!=null&&s!.varianceKwh>0?"+":""}{fmt(s!.varianceKwh)}<small> kWh</small></strong><p>Actual less predicted · matched intervals</p></article>
       </div></>}
     <SiteOperationalCards site={site} period={operationalPeriod} loading={operationsLoading} error={operationsError} onRetry={onRetryOperations}/>
+    <SiteFinancialCards site={site} from={from} to={to} fromTime={fromTime} toTime={toTime}/>
     {!data?<div className="live-data-state" role="status"><Database/><strong>{error??"Loading contract predictions and actual performance"}</strong><span>{error?"Please retry the selected period.":"PVModel · PVSOL · solar meters · Solcast"}</span>{error&&<button onClick={()=>setRetry(n=>n+1)}>Retry</button>}</div>:<>
       <div className="contract-readout"><div><strong>{s!.attainmentPercent==null?"A comparison is not available for this selection.":s!.attainmentPercent>=100?`Production is ${fmt(s!.attainmentPercent-100)}% above the contract model.`:`Production is ${fmt(100-s!.attainmentPercent)}% below the contract model.`}</strong><p>{s!.comparisonCoverage<99.9?"This result covers the intervals with both meter readings and predictions.":"This result covers the complete selected period."} Weather and PR comparisons below add context.</p></div><span className={s!.predictionCoverage>=99.9&&s!.actualCoverage>=99.9?"":"partial"}>{s!.predictionCoverage>=99.9&&s!.actualCoverage>=99.9?"Complete comparison":"Partial comparison"}</span></div>
       <ComparisonChart title="Contract prediction versus actual energy" note={resolution+" intervals · model source is hourly"} data={data.series} bars={bars} unit="kWh" series={[

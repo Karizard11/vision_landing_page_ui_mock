@@ -1,5 +1,7 @@
 "use client";
 
+import { SiteFinancialCards } from "@/components/site-financial-cards";
+
 import { useEffect, useMemo, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -529,8 +531,8 @@ function SiteDashboardPanels({ item, period }: { item: PortfolioSite; period: Pr
   </div>;
 }
 
-function SiteDashboardView({ item, period }: { item: PortfolioSite; period: PrecoolPeriod }) {
-  return <><PageTitle title={item.name} subtitle={`${item.displayName ?? contractSiteLabel(item)} | Site dashboard | Contract ${item.contractId ?? "—"}`}/><CoverageNotice period={period}/><SiteDashboardPanels item={item} period={period}/></>;
+function SiteDashboardView({ item, period, from, to, fromTime, toTime }: { item: PortfolioSite; period: PrecoolPeriod; from:string; to:string; fromTime:string; toTime:string }) {
+  return <><PageTitle title={item.name} subtitle={`${item.displayName ?? contractSiteLabel(item)} | Site dashboard | Contract ${item.contractId ?? "—"}`}/><CoverageNotice period={period}/><SiteFinancialCards site={item} from={from} to={to} fromTime={fromTime} toTime={toTime}/><SiteDashboardPanels item={item} period={period}/></>;
 }
 
 function meterSeriesKey(item: PortfolioSite, node: PortfolioNode) {
@@ -939,7 +941,7 @@ export function MockEnergyDashboard() {
     {needsOperationalData && !isContractPerformance && !catalogError && !loading && dataError && <LiveDataState error={dataError} onRetry={() => setRetry(value => value + 1)}/>}
     {catalogState && !catalogError && view.kind === "portfolio" && <PortfolioView navigate={setView} period={portfolioId === "terradew-four" ? period : null} sites={visiblePortfolioSites} portfolioId={portfolioId}/>}
     {catalogState && !catalogError && isContractPerformance && item.contractId && <SiteContractPerformance site={item} from={from} to={to} fromTime={fromTime} toTime={toTime} operationalPeriod={period} operationsLoading={loading} operationsError={dataError} onRetryOperations={() => setRetry(value => value + 1)} onOpenNode={nodeId=>setView({kind:"meter",siteCode:siteNavigationId(item),nodeId})}/>}
-    {period && view.kind === "site" && surfaceMode === "dashboard" && <SiteDashboardView item={item} period={period}/>}
+    {period && view.kind === "site" && surfaceMode === "dashboard" && <SiteDashboardView item={item} period={period} from={from} to={to} fromTime={fromTime} toTime={toTime}/>}
     {period && view.kind === "meter" && node && (surfaceMode === "dashboard" ? <MeterDashboardView item={item} node={node} period={period}/> : <MeterView item={item} node={node} navigate={setView} period={period}/>)}
     {period && view.kind === "inverters" && <InverterTotalView navigate={setView} period={period}/>}
     {period && view.kind === "inverter" && <SingleInverterView code={view.inverterCode} period={period} history={telemetryHistory} historyLoading={telemetryLoading} historyError={telemetryError}/>}
