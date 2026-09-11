@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Activity, AlertTriangle, ArrowUpRight, BatteryCharging, Building2,
-  CalendarDays, Check, ChevronDown, ChevronRight, CircleGauge, Database,
+  CalendarDays, Check, ChevronRight, CircleGauge, Database,
   Factory, Gauge, Home, Info, Layers3, Network, Search, SunMedium, Users, Zap,
 } from "lucide-react";
 import { addDays, endOfMonth, format, startOfMonth, startOfYear, subMonths } from "date-fns";
@@ -19,7 +19,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SiteContractPerformance } from "@/components/site-contract-performance";
-import { contractSiteLabel, portfolios, siteNavigationId, sitesForPortfolio, isVirtualTotalNode, portfolioSites, siteNavigationNodes, type PortfolioNavigationNode, type PortfolioNode, type PortfolioSite } from "@/lib/portfolio-data";
+import { contractSiteLabel, togglePortfolioExpansion, portfolios, siteNavigationId, sitesForPortfolio, isVirtualTotalNode, portfolioSites, siteNavigationNodes, type PortfolioNavigationNode, type PortfolioNode, type PortfolioSite } from "@/lib/portfolio-data";
 import { inverterConfiguration, inverterSummary as inverterMetadata, type InverterElectricalConfig } from "@/lib/precool-data";
 import { buildInverterEnergySeries, buildInverterHeatmap } from "@/lib/inverter-analytics";
 import { DEFAULT_PRECOOL_DATE, getPrecoolPeriod, type PrecoolDataset, type PrecoolMeterSnapshot, type PrecoolPeriod, type PrecoolTelemetryHistory } from "@/lib/precool-period";
@@ -179,10 +179,23 @@ function NodeIcon({ type }: { type: string }) {
 function NavigationSidebar({ view, navigate, sites }: { view: View; navigate: Navigate; sites: PortfolioSite[] }) {
   const current = selectedSite(view,sites);
   const selectedPortfolio = view.kind === "portfolio" ? view.portfolioId ?? "terradew-four" : current.portfolioId ?? "terradew-four";
+  const [expandedPortfolios, setExpandedPortfolios] = useState<Set<string>>(() => new Set([selectedPortfolio]));
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["P0480:3"]));
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(() => new Set());
   const [query, setQuery] = useState("");
   const visibleSites = sites.filter(item => !query || `${item.name} ${item.code}`.toLowerCase().includes(query.toLowerCase()));
+  function togglePortfolio(id: string) { setExpandedPortfolios(previous => togglePortfolioExpansion(previous,id)); }
+  function selectPortfolio(id: string) {
+    setExpandedPortfolios(previous => new Set(previous).add(id));
+    navigate({kind:"portfolio",portfolioId:id});
+  }
+  function searchSites(value: string) {
+    setQuery(value);
+    if (value.trim()) {
+      const matches = sites.filter(item => `${item.name} ${item.code}`.toLowerCase().includes(value.toLowerCase()));
+      setExpandedPortfolios(previous => new Set([...previous,...matches.map(item => item.portfolioId ?? "terradew-four")]));
+    }
+  }
   function openSite(item: PortfolioSite) { setExpanded(previous => { const next = new Set(previous); if (next.has(siteNavigationId(item)) && siteNavigationId(current) === siteNavigationId(item)) next.delete(siteNavigationId(item)); else next.add(siteNavigationId(item)); return next; }); navigate({kind:"site",siteCode:siteNavigationId(item)}); }
   function toggleNode(key: string) { setCollapsedNodes(previous => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next; }); }
   return <Sidebar collapsible="icon" className="navigation-sidebar">
@@ -194,11 +207,15 @@ function NavigationSidebar({ view, navigate, sites }: { view: View; navigate: Na
     <SidebarTrigger className="sidebar-collapse"/>
     <section className="white-navigation">
       <div className="navigation-title"><strong>Navigation</strong><Network/></div>
-      <label className="nav-search"><Search/><input aria-label="Search sites" placeholder="Search" value={query} onChange={event => setQuery(event.target.value)}/></label>
+      <label className="nav-search"><Search/><input aria-label="Search sites" placeholder="Search" value={query} onChange={event => searchSites(event.target.value)}/></label>
       <div className="navigation-tree">
         {portfolios.map(portfolio => <div key={portfolio.id} className="portfolio-tree">
-        <button className={`provider-row ${selectedPortfolio === portfolio.id ? "active" : ""}`} onClick={() => navigate({kind:"portfolio",portfolioId:portfolio.id})} title={portfolio.description}>{selectedPortfolio===portfolio.id?<ChevronDown/>:<ChevronRight/>}<Layers3/><span>{portfolio.name}</span><small>({sitesForPortfolio(sites,portfolio.id).length})</small></button>
-        {(selectedPortfolio === portfolio.id || query ? sitesForPortfolio(visibleSites,portfolio.id) : []).map(item => { const activeSite = view.kind !== "portfolio" && (view.siteCode === siteNavigationId(item) || view.siteCode === item.code); const isOpen = expanded.has(siteNavigationId(item)) || activeSite; const navigationNodes = siteNavigationNodes(item); return <div className="site-tree" key={siteNavigationId(item)}>
+        <div className={`provider-row ${selectedPortfolio === portfolio.id ? "active" : ""}`}>
+          <button type="button" className="portfolio-toggle" aria-label={`${expandedPortfolios.has(portfolio.id) ? "Collapse" : "Expand"} ${portfolio.name}`} aria-controls={`${portfolio.id}-sites`} aria-expanded={expandedPortfolios.has(portfolio.id)} onClick={() => togglePortfolio(portfolio.id)}><ChevronRight className={expandedPortfolios.has(portfolio.id) ? "rotated" : ""}/></button>
+          <button type="button" className="portfolio-link" onClick={() => selectPortfolio(portfolio.id)} title={portfolio.description}><Layers3/><span>{portfolio.name}</span><small>({sitesForPortfolio(sites,portfolio.id).length})</small></button>
+        </div>
+        <div id={`${portfolio.id}-sites`} className="portfolio-site-list" hidden={!expandedPortfolios.has(portfolio.id)}>
+        {sitesForPortfolio(visibleSites,portfolio.id).map(item => { const activeSite = view.kind !== "portfolio" && (view.siteCode === siteNavigationId(item) || view.siteCode === item.code); const isOpen = expanded.has(siteNavigationId(item)) || activeSite; const navigationNodes = siteNavigationNodes(item); return <div className="site-tree" key={siteNavigationId(item)}>
           <button className={`site-tree-row ${activeSite ? "active" : ""}`} onClick={() => openSite(item)} title={`Contract ${item.contractId ?? "unavailable"}`}><ChevronRight className={isOpen ? "rotated" : ""}/><Building2/><span>{item.displayName ?? contractSiteLabel(item)}</span><small>({item.meterCount})</small></button>
           {isOpen && <div className="site-node-list">{navigationNodes.map(node => {
             const collapseKey = `${siteNavigationId(item)}:${node.navigationKey}`;
@@ -217,6 +234,7 @@ function NavigationSidebar({ view, navigate, sites }: { view: View; navigate: Na
             </div>;
           })}</div>}
         </div>; })}
+        </div>
         </div>)}
       </div>
     </section>

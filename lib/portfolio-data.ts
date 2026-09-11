@@ -53,6 +53,12 @@ export const portfolios = [
   {id:"redefine-properties", name:"Redefine Properties", description:"Account · EPC contracts"},
 ];
 
+export function togglePortfolioExpansion(expanded: ReadonlySet<string>, portfolioId: string) {
+  const next = new Set(expanded);
+  if (next.has(portfolioId)) next.delete(portfolioId); else next.add(portfolioId);
+  return next;
+}
+
 export function siteNavigationId(item: Pick<PortfolioSite,"code"|"contractId">) {
   return item.contractId ? `${item.code}:${item.contractId}` : item.code;
 }

@@ -65,7 +65,12 @@ button{color:inherit}
 .nav-search svg{width:13px}.nav-search input{width:100%;border:0;outline:0;background:transparent;font-size:10px;color:#124750}
 .navigation-tree{min-height:0;overflow:auto;padding:0 8px 16px;scrollbar-width:thin;scrollbar-color:#b9c9cb transparent}
 .provider-row,.site-tree-row,.node-row{width:100%;height:28px;border:0;border-radius:3px;display:grid;align-items:center;gap:5px;background:transparent;text-align:left;cursor:pointer;white-space:nowrap}
-.provider-row{grid-template-columns:13px 14px minmax(0,1fr) auto;padding:0 8px;font-size:10px}
+.provider-row{grid-template-columns:24px minmax(0,1fr);padding:0 4px;font-size:10px;cursor:default}
+.portfolio-toggle{width:24px;height:28px;border:0;border-radius:3px;background:transparent;color:inherit;display:grid;place-items:center;cursor:pointer;padding:0}
+.portfolio-link{min-width:0;height:28px;border:0;background:transparent;color:inherit;display:grid;grid-template-columns:14px minmax(0,1fr) auto;align-items:center;gap:5px;padding:0 4px 0 0;text-align:left;cursor:pointer;font:inherit}
+.portfolio-site-list[hidden]{display:none}
+.portfolio-toggle .rotated{transform:rotate(90deg)}
+.portfolio-toggle:focus-visible,.portfolio-link:focus-visible{outline:1px solid #0a6974;outline-offset:-1px}
 .site-tree-row{grid-template-columns:13px 14px minmax(0,1fr) auto;padding:0 7px 0 13px;font-size:9.5px}
 .node-row{grid-template-columns:11px 13px minmax(0,1fr) auto;padding-right:8px;font-size:9px;color:#285960}
 .provider-row svg,.site-tree-row svg,.node-row svg{width:11px;height:11px;transition:transform .15s}
