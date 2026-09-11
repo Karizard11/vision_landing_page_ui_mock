@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { inclusiveRangeMinutes, selectedTimestampIsInRange } from "../lib/date-time-range.ts";
 import { periodBucketMinutes, periodGranularity, periodUsesBars } from "../lib/period-resolution.ts";
 
 test("date ranges select the requested chart resolution", () => {
@@ -31,4 +32,17 @@ test("summary resolutions use bar charts", () => {
   assert.equal(periodUsesBars("day"),true);
   assert.equal(periodUsesBars("month"),true);
   assert.equal(periodUsesBars("year"),true);
+});
+
+test("SAST date-time ranges retain the inclusive selected end minute", () => {
+  assert.equal(inclusiveRangeMinutes("2026-08-22","00:00","2026-08-22","23:59"),1440);
+  assert.equal(inclusiveRangeMinutes("2026-08-22","10:00","2026-08-22","10:30"),31);
+  assert.equal(inclusiveRangeMinutes("2026-08-22","23:30","2026-08-23","00:30"),61);
+});
+
+test("interval filtering uses the selected SAST date and time", () => {
+  assert.equal(selectedTimestampIsInRange("2026-08-22","09:55","2026-08-22","10:00","2026-08-22","10:30"),false);
+  assert.equal(selectedTimestampIsInRange("2026-08-22","10:00","2026-08-22","10:00","2026-08-22","10:30"),true);
+  assert.equal(selectedTimestampIsInRange("2026-08-22","10:30","2026-08-22","10:00","2026-08-22","10:30"),true);
+  assert.equal(selectedTimestampIsInRange("2026-08-22","10:35","2026-08-22","10:00","2026-08-22","10:30"),false);
 });

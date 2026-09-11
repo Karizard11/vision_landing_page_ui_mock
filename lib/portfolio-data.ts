@@ -9,6 +9,7 @@ export type PortfolioNode = {
   seriesKey?: string;
   meterSerials?: string[];
   isPhysical?: boolean;
+  measurementKind?: "metered" | "calculated";
 };
 
 export type PortfolioSite = {
@@ -47,7 +48,12 @@ export function contractSiteLabel(item: Pick<PortfolioSite,"code"|"name"|"phaseN
 
 export function isVirtualTotalNode(node: PortfolioNode) {
   const type = node.type.toLowerCase();
-  return type === "site total" || type === "solar total" || type === "municipal total";
+  return type === "site total" || type === "solar total" || type === "municipal total" || type === "load total";
+}
+
+export function isLoadNode(node: PortfolioNode) {
+  const descriptor = `${node.name} ${node.type}`.toLowerCase();
+  return descriptor.includes("load") || descriptor.includes("remainder");
 }
 
 export function siteNavigationNodes(item: PortfolioSite): PortfolioNavigationNode[] {
@@ -62,16 +68,17 @@ export function siteNavigationNodes(item: PortfolioSite): PortfolioNavigationNod
   const nodes = new Map(item.nodes.map(node => [node.id,node]));
   const branch = (id: string, parentId: string | undefined, navigationKey: string): PortfolioNavigationNode => ({...nodes.get(id)!,parentId,navigationKey});
   return [
-    branch("1140726",undefined,"site-total"),
-    branch("1140727","1140726","municipal-total"),
-    branch("1140724","1140727","municipal-incomer-1"),
-    branch("1140730","1140724","municipal-pvdb-1"),
-    branch("1140728","1140727","municipal-incomer-2"),
-    branch("1140721","1140728","municipal-pvdb-2"),
-    branch("1140729","1140727","municipal-incomer-3"),
-    branch("1140723","1140726","solar-total"),
-    branch("1140730","1140723","solar-pvdb-1"),
-    branch("1140721","1140723","solar-pvdb-2"),
+    branch("p0480-site-total",undefined,"site-total"),
+    branch("1140726","site-total","load-total"),
+    branch("1140727","site-total","municipal-total"),
+    branch("1140724","municipal-total","municipal-incomer-1"),
+    branch("1140730","municipal-incomer-1","municipal-pvdb-1"),
+    branch("1140728","municipal-total","municipal-incomer-2"),
+    branch("1140721","municipal-incomer-2","municipal-pvdb-2"),
+    branch("1140729","municipal-total","municipal-incomer-3"),
+    branch("1140723","site-total","solar-total"),
+    branch("1140730","solar-total","solar-pvdb-1"),
+    branch("1140721","solar-total","solar-pvdb-2"),
   ];
 }
 
@@ -81,7 +88,9 @@ export const portfolioSites: PortfolioSite[] = [
   { code:"P0428", name:"Cavaleros Norwood Mall", city:"Norwood", capacityKwp:2390.30, annualYieldKwh:3882029, guarantee:95, commissioned:"09 Dec 2022", meterCount:7, nodeCount:12, systemKey:"IP2EH", nodes:[
     n("1140733",undefined,"PVDB Total","Solar total",3), n("1140734",undefined,"Transformer 2","Transformer"), n("1140743","1140734","MPV2","Solar"), n("1140737",undefined,"Transformer 4","Transformer"), n("1140739","1140737","MPV1","Solar"), n("1140736",undefined,"Transformer 1","Transformer"), n("1140735",undefined,"Transformer 3","Transformer"), n("1140732","1140735","MPV3","Solar") ] },
   { code:"P0480", name:"PreCool Cold Storage", city:"Elangeni", capacityKwp:1851.33, annualYieldKwh:2390607.535, guarantee:95, tariff:.88, commissioned:"31 Aug 2023", meterCount:5, nodeCount:9, systemKey:"5ID4A", nodes:[
-    n("1140726",undefined,"Site Total","Site total",5), n("1140727","1140726","Municipal Total","Municipal total",3), n("1140724","1140727","Incomer 1","Transformer"), n("1140730","1140724","PVDB 1","Solar"), n("1140728","1140727","Incomer 2","Transformer"), n("1140721","1140728","PVDB 2","Solar"), n("1140729","1140727","Incomer 3","Transformer"), n("1140723","1140726","Solar Total","Solar total",2) ] },
+    {id:"p0480-site-total",name:"Site Total",type:"Site total",meters:5,seriesKey:"site",isPhysical:false,measurementKind:"calculated"},
+    {id:"1140726",parentId:"p0480-site-total",name:"Load Total",type:"Load total",meters:5,seriesKey:"load",isPhysical:false,measurementKind:"calculated"},
+    n("1140727","p0480-site-total","Municipal Total","Municipal total",3), n("1140724","1140727","Incomer 1","Transformer"), n("1140730","1140724","PVDB 1","Solar"), n("1140728","1140727","Incomer 2","Transformer"), n("1140721","1140728","PVDB 2","Solar"), n("1140729","1140727","Incomer 3","Transformer"), n("1140723","p0480-site-total","Solar Total","Solar total",2) ] },
   { code:"P0504", name:"CBI African Cables", city:"Vereeniging", capacityKwp:2259, annualYieldKwh:3541266, guarantee:95, tariff:1.03, commissioned:"27 Feb 2024", meterCount:5, nodeCount:14, systemKey:"A3R64", nodes:[
     n("1500014",undefined,"Solar Total","Solar total",3), n("1500017","1500014","PVDB 3","Solar"), n("1500016","1500014","PVDB 1","Solar"), n("1500015","1500014","PVDB 2","Solar"), n("4509502",undefined,"Site Total","Municipal total",2), n("4505338","4509502","Main Incomer 2","Transformer"), n("4546205","4505338","Main Incomer 2 - Load","Transformer",2), n("4510451","4509502","Main Incomer 1","Transformer"), n("4508818","4510451","Main Incomer 1 - Load","Transformer",3) ] },
   { code:"P0517", name:"Country Bird Holdings - Germiston", city:"Germiston", capacityKwp:2621, annualYieldKwh:3917462, guarantee:95, tariff:.941, commissioned:"05 Oct 2023", meterCount:4, nodeCount:10, systemKey:"UKRDS", nodes:[

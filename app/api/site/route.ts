@@ -1,6 +1,7 @@
 import { dorisUpstream } from "@/lib/doris-upstream";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const contractPattern = /^\d+$/;
 
 function validDate(value: string | null) {
@@ -13,13 +14,17 @@ export async function GET(request: Request) {
   const incoming = new URL(request.url);
   const from = incoming.searchParams.get("from");
   const to = incoming.searchParams.get("to");
+  const fromTime = incoming.searchParams.get("from_time") ?? "00:00";
+  const toTime = incoming.searchParams.get("to_time") ?? "23:59";
   const contractId = incoming.searchParams.get("contract_id");
-  if (!validDate(from) || !validDate(to) || !contractId || !contractPattern.test(contractId)) {
-    return Response.json({ error: "from, to, and contract_id must be valid" }, { status: 400 });
+  if (!validDate(from) || !validDate(to) || !timePattern.test(fromTime) || !timePattern.test(toTime) || !contractId || !contractPattern.test(contractId)) {
+    return Response.json({ error: "from, to, from_time, to_time, and contract_id must be valid" }, { status: 400 });
   }
   const upstream = dorisUpstream("api/site");
   upstream.searchParams.set("from", from!);
   upstream.searchParams.set("to", to!);
+  upstream.searchParams.set("from_time", fromTime);
+  upstream.searchParams.set("to_time", toTime);
   upstream.searchParams.set("contract_id", contractId);
   try {
     const response = await fetch(upstream, {

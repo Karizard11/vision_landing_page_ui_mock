@@ -24,6 +24,50 @@ npm run dev
 
 npm run dev starts the private Doris API on 127.0.0.1:8788 and the React application on http://localhost:5173. The date selector supports live day, week, and month-sized requests of up to 31 days.
 
+## Docker Desktop
+
+The complete dashboard can run as two Docker Desktop services: `web` for the UI and same-origin proxy routes, and `api` for Doris queries and tariff calculations. Only loopback ports are published, so the containers are not exposed to the LAN.
+
+Requirements:
+
+- Docker Desktop with WSL integration enabled
+- the VPN connected before the containers start
+- Doris credentials in `../pld_calculator/.env` (or another Compose env file)
+- the reporting checkout at `../reporting`
+
+Start the stack from this directory:
+
+~~~bash
+docker compose --env-file ../pld_calculator/.env up --build -d
+~~~
+
+Open <http://localhost:5173>. Check container health or follow the API logs with:
+
+~~~bash
+docker compose ps
+docker compose logs -f api web
+~~~
+
+Stop it with:
+
+~~~bash
+docker compose --env-file ../pld_calculator/.env down
+~~~
+
+Only the five `DB_*` settings used by the Doris client are forwarded into the API container; unrelated values from the env file are not exposed to it. The backend image includes the reporting tariff runtime during its build so Municipal Total financials work inside the container. If the reporting checkout lives elsewhere, set `REPORTING_BUILD_CONTEXT` to that directory before building. If local ports 5173 or 8788 are occupied, set `DASHBOARD_PORT` or `DORIS_API_PORT` in the Compose env file to unused host ports; container-to-container addresses do not change.
+
+The ngrok agent is intentionally not part of this stack. The existing shared proxy exposes only the subpath-aware web service; Doris remains behind the private API service.
+
+### Shared ngrok proxy
+
+Start or refresh the shared dashboard service with:
+
+~~~bash
+docker compose --env-file ../pld_calculator/.env -f compose.yaml -f compose.shared.yaml up --build -d web-shared
+~~~
+
+The shared Nginx proxy resolves this service as `vision-dashboard` and serves it at `/vision`. Point the ngrok Docker Desktop extension at the existing `shared-ngrok-proxy` container on port 80, then open `https://<your-ngrok-domain>/vision`.
+
 ## Municipal tariff financials
 
 Municipal Total views use the canonical Single Meter pricing flow from the sibling reporting project. By default the backend expects:

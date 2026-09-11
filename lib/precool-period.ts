@@ -1,6 +1,7 @@
 import { inverterSummary as inverterMetadata } from "@/lib/precool-data";
 import { combineMeterSnapshots } from "@/lib/meter-period";
 import { periodBucketMinutes, periodGranularity, type PeriodGranularity } from "@/lib/period-resolution";
+import { DEFAULT_END_TIME, DEFAULT_START_TIME, inclusiveRangeMinutes, selectedTimestampIsInRange } from "@/lib/date-time-range";
 
 export const DEFAULT_PRECOOL_DATE = "2026-08-22";
 
@@ -55,6 +56,9 @@ export type PrecoolTelemetryHistory = {
     from: string;
     to: string;
     granularity: PeriodGranularity;
+    fromTime?: string;
+    toTime?: string;
+    timeZone?: string;
     powerUnit: "kW" | "MWh";
   };
   inverterCode: string;
@@ -142,6 +146,9 @@ export type PrecoolDataset = {
     from: string;
     to: string;
     latestCompleteInverterDay: string | null;
+    fromTime?: string;
+    toTime?: string;
+    timeZone?: string;
     partialInverterDay: string | null;
     partialInverterThrough: string | null;
     sensorAvailable: boolean;
@@ -161,6 +168,9 @@ export type PrecoolPeriod = {
   from: string;
   to: string;
   dayCount: number;
+  durationMinutes: number;
+  durationDays: number;
+  expectedFiveMinuteReadings: number;
   granularity: PeriodGranularity;
   totals: PrecoolDay["totals"];
   meters: Record<string, PrecoolMeterSnapshot>;
@@ -312,13 +322,20 @@ function resampleInverters(
   });
 }
 
-export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string): PrecoolPeriod {
+export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string, fromTime = DEFAULT_START_TIME, toTime = DEFAULT_END_TIME): PrecoolPeriod {
   const start = from <= to ? from : to;
   const end = from <= to ? to : from;
-  const selected = Object.entries(data.days).filter(([key]) => key >= start && key <= end);
+  const durationMinutes = inclusiveRangeMinutes(start,fromTime,end,toTime);
+  const durationDays = durationMinutes/(24*60);
+  const selected = Object.entries(data.days).filter(([key]) => key >= start && key <= end)
+    .map(([key,day]) => [key,{...day,
+      power:day.power.length <= 1 ? day.power : day.power.filter(row => selectedTimestampIsInRange(key,String(row.time),start,fromTime,end,toTime)),
+      inverterAc:day.inverterAc.length <= 1 ? day.inverterAc : day.inverterAc.filter(row => selectedTimestampIsInRange(key,String(row.time),start,fromTime,end,toTime)),
+      inverterDc:day.inverterDc.length <= 1 ? day.inverterDc : day.inverterDc.filter(row => selectedTimestampIsInRange(key,String(row.time),start,fromTime,end,toTime)),
+    }] as [string,PrecoolDay]);
   const selectedDays = selected.map(([,day]) => day);
   const dayCount = selectedDays.length;
-  const granularity = periodGranularity(dayCount);
+  const granularity = periodGranularity(Math.max(1,Math.ceil(durationDays)));
   const sourceIntervalMinutes = data.range.powerIntervalMinutes ?? (selectedDays[0]?.power.length > 24 ? 5 : 60);
 
   const solarEnergyMwh = selectedDays.reduce((sum,day) => sum + day.totals.solarEnergyMwh,0);
@@ -330,6 +347,11 @@ export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string)
   const prEstimate = irradiationKwhM2 && capacityKwp ? solarEnergyMwh*1000/(capacityKwp*irradiationKwhM2)*100 : 0;
   const lastCumulative = [...selectedDays].reverse().map(day => day.totals.cumulativeEnergyGwh).find(value => value !== null) ?? null;
   const inverterReadings = selectedDays.reduce((sum,day) => sum + day.totals.inverterReadings,0);
+  const expectedFiveMinuteReadings = Math.ceil(durationMinutes/5);
+  const baseMeterAvailability = dayCount ? selectedDays.reduce((sum,day) => sum + day.totals.meterAvailability,0)/dayCount : 0;
+  const meterAvailability = expectedFiveMinuteReadings ? Math.min(100,baseMeterAvailability*dayCount*288/expectedFiveMinuteReadings) : 0;
+  const expectedInverters = data.site?.inverterCount ?? 0;
+  const inverterAvailability = expectedFiveMinuteReadings && expectedInverters ? inverterReadings/(expectedFiveMinuteReadings*expectedInverters)*100 : 0;
 
   const meterKeys = data.site?.meterKeys ?? precoolMeterKeys;
   const meters = Object.fromEntries(meterKeys.map(key => {
@@ -358,7 +380,7 @@ export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string)
       cumulative:last?.cumulative ?? 0,
       readings,
       hasData:snapshots.length > 0,
-      availability:dayCount ? readings/(dayCount*288)*100 : 0,
+      availability:expectedFiveMinuteReadings ? readings/expectedFiveMinuteReadings*100 : 0,
     };
   });
 
@@ -368,19 +390,19 @@ export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string)
   const telemetry = telemetryEntry?.[1].telemetry ?? {};
   const telemetryDate = telemetryEntry?.[0] ?? null;
 
-  const inverterAvailabilities = selectedDays.map(day => day.totals.inverterAvailability);
-  const inverterCoverage = inverterAvailabilities.every(value => value >= 99.9)
+  const inverterCoverage = inverterAvailability >= 99.9
     ? "complete"
-    : inverterAvailabilities.every(value => value === 0)
+    : inverterAvailability === 0
       ? "unavailable"
-      : dayCount === 1
-        ? "partial"
-        : "mixed";
+      : durationMinutes <= 1440 ? "partial" : "mixed";
 
   return {
     from:start,
     to:end,
     dayCount,
+    durationMinutes,
+    durationDays,
+    expectedFiveMinuteReadings,
     granularity,
     totals:{
       solarEnergyMwh,
@@ -394,8 +416,8 @@ export function getPrecoolPeriod(data: PrecoolDataset, from: string, to: string)
       peakSolarKw:Math.max(0,...selectedDays.map(day => day.totals.peakSolarKw)),
       solcastPeakGhi:Math.max(0,...selectedDays.map(day => day.totals.solcastPeakGhi)),
       prEstimate,
-      meterAvailability:dayCount ? selectedDays.reduce((sum,day) => sum + day.totals.meterAvailability,0)/dayCount : 0,
-      inverterAvailability:dayCount && inverterList.length ? inverterReadings/(dayCount*288*inverterList.length)*100 : 0,
+      meterAvailability,
+      inverterAvailability,
       inverterReadings,
     },
     meters,

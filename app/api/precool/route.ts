@@ -1,6 +1,7 @@
 import { dorisUpstream } from "@/lib/doris-upstream";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 function validDate(value: string | null) {
   if (!value || !datePattern.test(value)) return false;
@@ -12,13 +13,17 @@ export async function GET(request: Request) {
   const incoming = new URL(request.url);
   const from = incoming.searchParams.get("from");
   const to = incoming.searchParams.get("to");
-  if (!validDate(from) || !validDate(to)) {
-    return Response.json({ error: "from and to must be valid YYYY-MM-DD dates" }, { status: 400 });
+  const fromTime = incoming.searchParams.get("from_time") ?? "00:00";
+  const toTime = incoming.searchParams.get("to_time") ?? "23:59";
+  if (!validDate(from) || !validDate(to) || !timePattern.test(fromTime) || !timePattern.test(toTime)) {
+    return Response.json({ error: "from, to, from_time, and to_time must be valid" }, { status: 400 });
   }
 
   const upstream = dorisUpstream("api/precool");
   upstream.searchParams.set("from", from!);
   upstream.searchParams.set("to", to!);
+  upstream.searchParams.set("from_time", fromTime);
+  upstream.searchParams.set("to_time", toTime);
 
   try {
     const response = await fetch(upstream, {

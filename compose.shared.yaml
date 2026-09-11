@@ -1,0 +1,33 @@
+services:
+  web-shared:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        NEXT_PUBLIC_BASE_PATH: /vision
+    environment:
+      DORIS_API_BASE_URL: http://api:8788
+      NEXT_PUBLIC_BASE_PATH: /vision
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      default:
+      shared_ngrok_proxy_default:
+        aliases:
+          - vision-dashboard
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:5173/vision/').then(function (response) { process.exit(response.ok ? 0 : 1) }).catch(function () { process.exit(1) })"
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 4
+
+networks:
+  shared_ngrok_proxy_default:
+    external: true

@@ -5,6 +5,7 @@ import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any
+from time_context import doris_utc_to_sast, sast_bucket_datetime
 
 
 PROVIDER_NAME = "Terradew Four"
@@ -67,10 +68,11 @@ def _navigation_nodes(
     site_id = _identifier(contract.get("site_id"))
     site_rows = [row for row in hierarchy_rows if _identifier(row.get("site_id")) == site_id]
     contract_id = _identifier(contract.get("contract_id"))
-    site_total_id = _identifier(contract.get("load_device_node_id")) or f"site-total-{contract_id}"
+    site_total_id = f"site-total-{contract_id}"
+    load_total_id = _identifier(contract.get("load_device_node_id"))
     municipal_total_id = _identifier(contract.get("municipal_total_device_node_id")) or f"municipal-total-{contract_id}"
     solar_total_id = _identifier(contract.get("solar_total_device_node_id")) or f"solar-total-{contract_id}"
-    role_ids = {site_total_id, municipal_total_id, solar_total_id}
+    role_ids = {value for value in (load_total_id, municipal_total_id, solar_total_id) if value}
     grouped: dict[str, dict[str, Any]] = {}
     for row in site_rows:
         device_node_id = _identifier(row.get("device_node_id"))
@@ -84,26 +86,93 @@ def _navigation_nodes(
                 "name": _text(row.get("device_node_name")),
                 "type": _text(row.get("device_node_type")) or "Meter",
                 "meterSerials": set(),
+                "physicalMeterSerials": set(),
             },
         )
         parent_device_node_id = _identifier(row.get("parent_device_node_id"))
         if parent_device_node_id:
             record["parentDeviceNodeIds"].add(parent_device_node_id)
+        meter_serial = _text(row.get("meter_serial"))
+        if meter_serial:
+            record["meterSerials"].add(meter_serial)
         if _physical(row):
-            record["meterSerials"].add(_text(row.get("meter_serial")))
+            record["physicalMeterSerials"].add(meter_serial)
 
     physical = {
         key: value for key, value in grouped.items()
-        if value["meterSerials"] and key not in role_ids
+        if value["physicalMeterSerials"] and key not in role_ids
     }
+    hierarchy_children: dict[str, set[str]] = defaultdict(set)
+    for child_id, record in grouped.items():
+        for parent_id in record["parentDeviceNodeIds"]:
+            if parent_id in grouped and parent_id != child_id:
+                hierarchy_children[parent_id].add(child_id)
+
+    def rollup_serials(device_node_id: str, trail: set[str] | None = None) -> set[str]:
+        if device_node_id not in grouped:
+            return set()
+        seen = set(trail or ())
+        if device_node_id in seen:
+            return set()
+        seen.add(device_node_id)
+        own_serials = set(grouped[device_node_id]["meterSerials"])
+        if own_serials:
+            return own_serials
+        return {
+            serial
+            for child_id in hierarchy_children.get(device_node_id, set())
+            for serial in rollup_serials(child_id, seen)
+        }
+
+    def is_load_record(record: dict[str, Any]) -> bool:
+        descriptor = f"{record['name']} {record['type']}".lower()
+        return "load" in descriptor or "remainder" in descriptor
+
+    base_records = {
+        key: value for key, value in grouped.items()
+        if key not in role_ids and (value["physicalMeterSerials"] or is_load_record(value))
+    }
+
+    role_navigation = {
+        load_total_id: "load-total",
+        municipal_total_id: "municipal-total",
+        solar_total_id: "solar-total",
+    }
+
+    def base_parent_navigation(device_node_id: str, record: dict[str, Any]) -> str:
+        parent_order = lambda parent_id: (
+            parent_id not in base_records,
+            role_navigation.get(parent_id) == "solar-total",
+            parent_id,
+        )
+        pending = sorted(record["parentDeviceNodeIds"], key=parent_order)
+        visited: set[str] = {device_node_id}
+        while pending:
+            parent_id = pending.pop(0)
+            if parent_id in visited:
+                continue
+            visited.add(parent_id)
+            if parent_id in role_navigation:
+                return role_navigation[parent_id]
+            if parent_id in base_records:
+                return f"base-{parent_id}"
+            parent_record = grouped.get(parent_id)
+            if parent_record:
+                pending.extend(sorted(parent_record["parentDeviceNodeIds"]))
+                pending.sort(key=parent_order)
+        return "load-total" if load_total_id and is_load_record(record) else "municipal-total"
+
+    load_total_serials = set(role_serials.get("load", []))
+    if not load_total_serials and load_total_id:
+        load_total_serials = rollup_serials(load_total_id)
     nodes: list[dict[str, Any]] = [
         {
             "id": site_total_id, "navigationKey": "site-total", "name": "Site Total",
             "type": "Site total",
-            "meters": len(set(role_serials.get("load", [])) | set(role_serials.get("municipal", [])) | set(role_serials.get("solar", []))),
+            "meters": len(load_total_serials | set(role_serials.get("municipal", [])) | set(role_serials.get("solar", []))),
             "seriesKey": "site",
-            "meterSerials": sorted(set(role_serials.get("load", [])) | set(role_serials.get("municipal", [])) | set(role_serials.get("solar", []))),
-            "isPhysical": False,
+            "meterSerials": sorted(load_total_serials | set(role_serials.get("municipal", [])) | set(role_serials.get("solar", []))),
+            "isPhysical": False, "measurementKind": "calculated",
         },
         {
             "id": municipal_total_id, "navigationKey": "municipal-total",
@@ -111,6 +180,7 @@ def _navigation_nodes(
             "type": "Municipal total", "meters": len(role_serials.get("municipal", [])),
             "seriesKey": "grid", "meterSerials": role_serials.get("municipal", []),
             "isPhysical": False,
+            "measurementKind": "metered" if role_serials.get("municipal") else "calculated",
         },
         {
             "id": solar_total_id, "navigationKey": "solar-total",
@@ -118,19 +188,30 @@ def _navigation_nodes(
             "type": "Solar total", "meters": len(role_serials.get("solar", [])),
             "seriesKey": "solar", "meterSerials": role_serials.get("solar", []),
             "isPhysical": False,
+            "measurementKind": "metered" if role_serials.get("solar") else "calculated",
         },
     ]
+    if load_total_id:
+        nodes.insert(1, {
+            "id": load_total_id, "navigationKey": "load-total",
+            "parentNavigationKey": "site-total", "name": "Load Total",
+            "type": "Load total", "meters": len(load_total_serials),
+            "seriesKey": "load", "meterSerials": sorted(load_total_serials),
+            "isPhysical": False,
+            "measurementKind": "metered" if load_total_serials else "calculated",
+        })
 
-    for device_node_id, record in physical.items():
-        parents = [parent for parent in record["parentDeviceNodeIds"] if parent in physical and parent != device_node_id]
-        parents.sort(key=lambda parent: ("solar" in physical[parent]["type"].lower(), parent))
-        parent = parents[0] if parents else None
+    for device_node_id, record in base_records.items():
+        is_physical = bool(record["physicalMeterSerials"])
+        serials = set(record["meterSerials"]) or rollup_serials(device_node_id)
         nodes.append({
             "id": record["id"], "navigationKey": f"base-{device_node_id}",
-            "parentNavigationKey": f"base-{parent}" if parent else "municipal-total",
-            "name": record["name"] or f"Meter {record['id']}", "type": record["type"],
-            "meters": len(record["meterSerials"]), "seriesKey": _series_key(record["id"]),
-            "meterSerials": sorted(record["meterSerials"]), "isPhysical": True,
+            "parentNavigationKey": base_parent_navigation(device_node_id, record),
+            "name": record["name"] or (f"Load {record['id']}" if is_load_record(record) else f"Meter {record['id']}"),
+            "type": record["type"],
+            "meters": len(serials), "seriesKey": _series_key(record["id"]),
+            "meterSerials": sorted(serials), "isPhysical": is_physical,
+            "measurementKind": "metered" if is_physical else "calculated",
         })
 
     solar_physical = {
@@ -146,6 +227,7 @@ def _navigation_nodes(
             "name": record["name"] or f"Solar meter {record['id']}", "type": record["type"],
             "meters": len(record["meterSerials"]), "seriesKey": _series_key(record["id"]),
             "meterSerials": sorted(record["meterSerials"]), "isPhysical": True,
+            "measurementKind": "metered",
         })
     children: dict[str | None, list[dict[str, Any]]] = defaultdict(list)
     for node in nodes:
@@ -330,7 +412,7 @@ def query_contract_source(
                 meters = _select(
                     cursor,
                     f"""
-                    SELECT DATE(timestamp) AS bucket_date, meter_serial,
+                    SELECT DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR)) AS bucket_date, meter_serial,
                            MIN(import_wh) AS import_start, MAX(import_wh) AS import_end,
                            MIN(export_wh) AS export_start, MAX(export_wh) AS export_end,
                            MAX(ABS(ptot)) AS peak_ptot,
@@ -338,8 +420,8 @@ def query_contract_source(
                     FROM electricity_energy_power
                     WHERE meter_serial IN ({placeholders})
                       AND timestamp >= %s AND timestamp < %s
-                    GROUP BY DATE(timestamp), meter_serial
-                    ORDER BY DATE(timestamp), meter_serial
+                    GROUP BY DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR)), meter_serial
+                    ORDER BY DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR)), meter_serial
                     """,
                     (*serials, start, end),
                 )
@@ -363,7 +445,7 @@ def query_contract_source(
                 inverters = _select(
                     cursor,
                     """
-                    SELECT DATE(d.timestamp) AS bucket_date, d.inverter_id,
+                    SELECT DATE(DATE_ADD(d.timestamp, INTERVAL 2 HOUR)) AS bucket_date, d.inverter_id,
                            i.inverter_name, i.inverter_model,
                            MAX(d.P_AC) AS peak_ac, MAX(d.P_DC) AS peak_dc,
                            MAX(d.E_DAY) AS energy_day, MAX(d.E_TOTAL) AS cumulative,
@@ -372,31 +454,31 @@ def query_contract_source(
                     LEFT JOIN vcom_inverters i
                       ON i.system_key = d.system_key AND i.inverter_id = d.inverter_id
                     WHERE d.system_key = %s AND d.timestamp >= %s AND d.timestamp < %s
-                    GROUP BY DATE(d.timestamp), d.inverter_id, i.inverter_name, i.inverter_model
-                    ORDER BY DATE(d.timestamp), d.inverter_id
+                    GROUP BY DATE(DATE_ADD(d.timestamp, INTERVAL 2 HOUR)), d.inverter_id, i.inverter_name, i.inverter_model
+                    ORDER BY DATE(DATE_ADD(d.timestamp, INTERVAL 2 HOUR)), d.inverter_id
                     """,
                     (system_key, start, end),
                 )
                 solcast = _select(
                     cursor,
                     """
-                    SELECT DATE(period_end) AS bucket_date,
+                    SELECT DATE(DATE_ADD(period_end, INTERVAL 90 MINUTE)) AS bucket_date,
                            SUM(ghi) * 0.5 / 1000 AS irradiation_kwh_m2,
                            MAX(ghi) AS peak_ghi
                     FROM solcast_data
                     WHERE system_key = %s AND period_end >= %s AND period_end < %s
-                    GROUP BY DATE(period_end) ORDER BY DATE(period_end)
+                    GROUP BY DATE(DATE_ADD(period_end, INTERVAL 90 MINUTE)) ORDER BY DATE(DATE_ADD(period_end, INTERVAL 90 MINUTE))
                     """,
-                    (system_key, start, end),
+                    (system_key, start + timedelta(minutes=30), end + timedelta(minutes=30)),
                 )
                 sensors = _select(
                     cursor,
                     """
-                    SELECT DATE(timestamp) AS bucket_date, MAX(SRAD) AS peak_srad,
+                    SELECT DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR)) AS bucket_date, MAX(SRAD) AS peak_srad,
                            COUNT(*) AS readings
                     FROM vcom_sensor_data
                     WHERE system_key = %s AND timestamp >= %s AND timestamp < %s
-                    GROUP BY DATE(timestamp) ORDER BY DATE(timestamp)
+                    GROUP BY DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR)) ORDER BY DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR))
                     """,
                     (system_key, start, end),
                 )
@@ -417,12 +499,12 @@ def query_contract_source(
                 solcast = _select(
                     cursor,
                     """
-                    SELECT period_end AS timestamp, ghi
+                    SELECT DATE_SUB(period_end, INTERVAL 30 MINUTE) AS timestamp, ghi
                     FROM solcast_data
                     WHERE system_key = %s AND period_end >= %s AND period_end < %s
                     ORDER BY period_end
                     """,
-                    (system_key, start, end),
+                    (system_key, start + timedelta(minutes=30), end + timedelta(minutes=30)),
                 )
                 sensors = _select(
                     cursor,
@@ -434,6 +516,11 @@ def query_contract_source(
                     """,
                     (system_key, start, end),
                 )
+    if not daily:
+        for collection in (meters, inverters, solcast, sensors):
+            for row in collection:
+                if row.get("timestamp") is not None:
+                    row["timestamp"] = doris_utc_to_sast(row["timestamp"])
     return {"meters": meters, "inverters": inverters, "solcast": solcast, "sensors": sensors, "daily": daily}
 
 
@@ -449,7 +536,7 @@ def aggregate_contract_payload(
     meter_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     meter_buckets: dict[tuple[str, int, str, str], list[float]] = defaultdict(list)
     for row in source["meters"]:
-        timestamp = _as_datetime(row.get("bucket_date") if daily else row.get("timestamp"))
+        timestamp = sast_bucket_datetime(row.get("bucket_date")) if daily else _as_datetime(row.get("timestamp"))
         day = timestamp.date().isoformat()
         serial = _text(row.get("meter_serial"))
         meter_groups[(day, serial)].append(row)
@@ -463,7 +550,7 @@ def aggregate_contract_payload(
     inverter_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     inverter_buckets: dict[tuple[str, int, str, str], list[float]] = defaultdict(list)
     for row in source["inverters"]:
-        timestamp = _as_datetime(row.get("bucket_date") if daily else row.get("timestamp"))
+        timestamp = sast_bucket_datetime(row.get("bucket_date")) if daily else _as_datetime(row.get("timestamp"))
         day = timestamp.date().isoformat()
         inverter_id = _text(row.get("inverter_id"))
         inverter_groups[(day, inverter_id)].append(row)
@@ -478,7 +565,7 @@ def aggregate_contract_payload(
     solcast_buckets: dict[tuple[str, int], list[float]] = defaultdict(list)
     solcast_days: dict[str, list[float]] = defaultdict(list)
     for row in source["solcast"]:
-        timestamp = _as_datetime(row.get("bucket_date") if daily else row.get("timestamp"))
+        timestamp = sast_bucket_datetime(row.get("bucket_date")) if daily else _as_datetime(row.get("timestamp"))
         day = timestamp.date().isoformat()
         if daily:
             solcast_days[day].append(_number(row.get("irradiation_kwh_m2")))
@@ -490,7 +577,7 @@ def aggregate_contract_payload(
     sensor_buckets: dict[tuple[str, int], list[float]] = defaultdict(list)
     sensor_days: dict[str, list[float]] = defaultdict(list)
     for row in source["sensors"]:
-        timestamp = _as_datetime(row.get("bucket_date") if daily else row.get("timestamp"))
+        timestamp = sast_bucket_datetime(row.get("bucket_date")) if daily else _as_datetime(row.get("timestamp"))
         day = timestamp.date().isoformat()
         value = _optional_number(row.get("peak_srad") if daily else row.get("SRAD"))
         if value is not None and value >= 0:
@@ -500,6 +587,14 @@ def aggregate_contract_payload(
 
     solar_serials = set(site.get("solarMeterSerials", []))
     grid_serials = set(site.get("municipalMeterSerials", []))
+    load_serials = set(site.get("loadMeterSerials", []))
+    if not load_serials:
+        load_serials = {
+            serial
+            for node in site["nodes"]
+            if node.get("navigationKey") == "load-total"
+            for serial in node.get("meterSerials", [])
+        }
     if not solar_serials:
         solar_serials = {
             serial for node in site["nodes"]
@@ -519,7 +614,7 @@ def aggregate_contract_payload(
         for row in source[collection]:
             raw = row.get("timestamp") or row.get("bucket_date")
             if raw:
-                timestamp = _as_datetime(raw)
+                timestamp = sast_bucket_datetime(raw) if daily else _as_datetime(raw)
                 latest_timestamp = timestamp if latest_timestamp is None or timestamp > latest_timestamp else latest_timestamp
 
     for day in days:
@@ -547,7 +642,7 @@ def aggregate_contract_payload(
         meters: dict[str, Any] = {}
         for node in site["nodes"]:
             key = node.get("seriesKey")
-            if not key or key in {"site", "solar", "grid"}:
+            if not key or key in {"site", "solar", "grid", "load"}:
                 continue
             serials = set(node.get("meterSerials", []))
             is_solar = "solar" in node["type"].lower()
@@ -561,6 +656,7 @@ def aggregate_contract_payload(
         solar_energy = sum(serial_energy[(serial, True)] for serial in solar_serials)
         grid_energy = sum(serial_energy[(serial, False)] for serial in grid_serials)
         grid_export = sum(serial_energy[(serial, True)] for serial in grid_serials) * 1000
+        load_energy = sum(serial_energy[(serial, False)] for serial in load_serials)
         meters["solar"] = {
             "energyMwh": round(solar_energy, 6),
             "peakKw": round(sum(serial_peak.get(serial, 0) for serial in solar_serials), 3),
@@ -572,6 +668,23 @@ def aggregate_contract_payload(
             "peakKw": round(sum(serial_peak.get(serial, 0) for serial in grid_serials), 3),
             "peakKva": round(sum(serial_apparent_peak.get(serial, 0) for serial in grid_serials), 3),
             "readings": sum(serial_readings.get(serial, 0) for serial in grid_serials),
+        }
+        meters["load"] = {
+            "energyMwh": round(load_energy if load_serials else grid_energy + solar_energy - grid_export / 1000, 6),
+            "peakKw": round(
+                sum(serial_peak.get(serial, 0) for serial in load_serials)
+                if load_serials else meters["grid"]["peakKw"] + meters["solar"]["peakKw"],
+                3,
+            ),
+            "peakKva": round(
+                sum(serial_apparent_peak.get(serial, 0) for serial in load_serials)
+                if load_serials else meters["grid"]["peakKva"] + meters["solar"]["peakKva"],
+                3,
+            ),
+            "readings": (
+                sum(serial_readings.get(serial, 0) for serial in load_serials)
+                if load_serials else sum(serial_readings.get(serial, 0) for serial in solar_serials | grid_serials)
+            ),
         }
         meters["site"] = {
             "energyMwh": round(grid_energy + solar_energy - grid_export / 1000, 6),
@@ -640,7 +753,7 @@ def aggregate_contract_payload(
                 point = {"time": f"{bucket // 12:02d}:{bucket % 12 * 5:02d}"}
                 for node in site["nodes"]:
                     key = node.get("seriesKey")
-                    if not key or key in {"site", "solar", "grid"}:
+                    if not key or key in {"site", "solar", "grid", "load"}:
                         continue
                     serials = set(node.get("meterSerials", []))
                     point[key] = round(sum(_mean(meter_buckets[(day, bucket, serial, "ptot")]) or 0 for serial in serials), 3)
@@ -649,6 +762,8 @@ def aggregate_contract_payload(
                 point["solarStot"] = round(sum(_mean(meter_buckets[(day, bucket, serial, "stot")]) or 0 for serial in solar_serials), 3)
                 point["grid"] = round(sum(_mean(meter_buckets[(day, bucket, serial, "ptot")]) or 0 for serial in grid_serials), 3)
                 point["gridStot"] = round(sum(_mean(meter_buckets[(day, bucket, serial, "stot")]) or 0 for serial in grid_serials), 3)
+                point["load"] = round(sum(_mean(meter_buckets[(day, bucket, serial, "ptot")]) or 0 for serial in load_serials), 3) if load_serials else round(point["grid"] + point["solar"], 3)
+                point["loadStot"] = round(sum(_mean(meter_buckets[(day, bucket, serial, "stot")]) or 0 for serial in load_serials), 3) if load_serials else round(point["gridStot"] + point["solarStot"], 3)
                 point["site"] = round(point["grid"] + point["solar"], 3)
                 point["siteStot"] = round(point["gridStot"] + point["solarStot"], 3)
                 inverter_values = [_mean(inverter_buckets[(day, bucket, item["code"], "P_AC")]) for item in summaries]
@@ -662,7 +777,7 @@ def aggregate_contract_payload(
         irradiation = sum(solcast_days[day]) if daily else sum(solcast_days[day]) * 0.5 / 1000
         inverter_readings = sum(item["readings"] for item in summaries)
         expected_inverter_readings = EXPECTED_READINGS_PER_DAY * max(len(summaries), 1)
-        physical_serials = set(solar_serials) | set(grid_serials)
+        physical_serials = set(solar_serials) | set(grid_serials) | set(load_serials)
         expected_meter_readings = EXPECTED_READINGS_PER_DAY * max(len(physical_serials), 1)
         cumulative_values = [item["cumulative"] for item in summaries if item["cumulative"]]
         payload_days[day] = {

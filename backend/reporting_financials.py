@@ -50,7 +50,14 @@ def load_municipal_financials(
     municipal_device_node_id: str | None,
     start_day: date,
     end_day: date,
+    *,
+    full_day_selection: bool = True,
 ) -> dict[str, Any]:
+    if not full_day_selection:
+        return _unavailable(
+            "Tariff pricing is available for complete SAST days; choose 00:00 to 23:59.",
+            reason_code="MUNICIPAL_PARTIAL_DAY_UNSUPPORTED",
+        )
     if not municipal_device_node_id or not municipal_device_node_id.isdigit():
         return _unavailable(
             "The solar contract does not identify a municipal total Device Node.",

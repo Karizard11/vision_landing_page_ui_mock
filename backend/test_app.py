@@ -9,6 +9,11 @@ from app import (
 )
 from contracts import _navigation_nodes, aggregate_contract_payload, contract_navigation_label
 from reporting_financials import load_municipal_financials
+from time_context import (
+    build_query_window,
+    doris_utc_to_sast,
+    solcast_period_start_sast,
+)
 
 
 class PeriodGranularityTests(TestCase):
@@ -19,6 +24,34 @@ class PeriodGranularityTests(TestCase):
         self.assertEqual(period_granularity(31), "day")
         self.assertEqual(period_granularity(366), "month")
         self.assertEqual(period_granularity(367), "year")
+
+
+class TimeContextTests(TestCase):
+    def test_full_sast_day_maps_to_previous_utc_evening(self):
+        window = build_query_window(
+            "2026-08-22", "2026-08-22", "00:00", "23:59", max_days=3660
+        )
+
+        self.assertEqual(window.start_utc, datetime(2026, 8, 21, 22, 0))
+        self.assertEqual(window.end_utc, datetime(2026, 8, 22, 22, 0))
+        self.assertEqual(window.duration_day_count, 1)
+        self.assertTrue(window.is_full_day_selection)
+
+    def test_partial_sast_window_keeps_inclusive_end_minute(self):
+        window = build_query_window(
+            "2026-08-22", "2026-08-22", "10:00", "10:30", max_days=3660
+        )
+
+        self.assertEqual(window.start_utc, datetime(2026, 8, 22, 8, 0))
+        self.assertEqual(window.end_utc, datetime(2026, 8, 22, 8, 31))
+        self.assertEqual(window.duration_minutes, 31)
+        self.assertFalse(window.is_full_day_selection)
+
+    def test_doris_and_solcast_timestamps_are_presented_in_sast(self):
+        doris_timestamp = datetime(2026, 8, 22, 8, 30)
+
+        self.assertEqual(doris_utc_to_sast(doris_timestamp).isoformat(), "2026-08-22T10:30:00+02:00")
+        self.assertEqual(solcast_period_start_sast(doris_timestamp).isoformat(), "2026-08-22T10:00:00+02:00")
 
 
 class TelemetryAggregationTests(TestCase):
@@ -100,6 +133,45 @@ class ContractCatalogTests(TestCase):
         self.assertEqual(by_key["base-101"]["parentNavigationKey"], "base-201")
         self.assertEqual(by_key["solar-101"]["parentNavigationKey"], "solar-total")
 
+    def test_virtual_load_nodes_keep_their_descendant_meter_mapping(self):
+        contract = {
+            "contract_id": 3,
+            "site_id": 4,
+            "load_device_node_id": 300,
+            "solar_total_device_node_id": 100,
+            "municipal_total_device_node_id": 200,
+        }
+        rows = [
+            {
+                "site_id": 4, "device_node_id": 300, "parent_device_node_id": None,
+                "device_node_name": "Load Total", "device_node_type": "Load total",
+                "meter_serial": None, "device_node_calc_mode": "SUM_CHILDREN",
+            },
+            {
+                "site_id": 4, "device_node_id": 301, "parent_device_node_id": 300,
+                "device_node_name": "Refrigeration Load", "device_node_type": "Load",
+                "meter_serial": "VIRTUAL-LOAD", "device_node_calc_mode": "SUM_CHILDREN",
+            },
+            {
+                "site_id": 4, "device_node_id": 302, "parent_device_node_id": 301,
+                "device_node_name": "Compressor Meter", "device_node_type": "Meter",
+                "meter_serial": "LOAD-1", "device_node_calc_mode": "GROSS_METERING",
+            },
+        ]
+
+        nodes = _navigation_nodes(
+            contract,
+            rows,
+            {"solar": [], "municipal": [], "load": []},
+        )
+        by_key = {node["navigationKey"]: node for node in nodes}
+
+        self.assertEqual(by_key["load-total"]["meterSerials"], ["VIRTUAL-LOAD"])
+        self.assertEqual(by_key["base-301"]["parentNavigationKey"], "load-total")
+        self.assertEqual(by_key["base-301"]["meterSerials"], ["VIRTUAL-LOAD"])
+        self.assertFalse(by_key["base-301"]["isPhysical"])
+        self.assertEqual(by_key["base-302"]["parentNavigationKey"], "base-301")
+
 
 class ContractPowerAggregationTests(TestCase):
     def test_active_and_apparent_power_roll_up_to_all_three_totals(self):
@@ -111,15 +183,18 @@ class ContractPowerAggregationTests(TestCase):
             "nodes": [
                 {"type": "Solar", "seriesKey": "pvdb1", "meterSerials": ["SOLAR"], "isPhysical": True},
                 {"type": "Transformer", "seriesKey": "incomer1", "meterSerials": ["GRID"], "isPhysical": True},
+                {"type": "Load total", "seriesKey": "load", "meterSerials": ["LOAD"], "isPhysical": False},
             ],
             "solarMeterSerials": ["SOLAR"],
             "municipalMeterSerials": ["GRID"],
+            "loadMeterSerials": ["LOAD"],
         }
         source = {
             "daily": False,
             "meters": [
                 {"timestamp": datetime(2026, 8, 22, 0, 0), "meter_serial": "SOLAR", "import_wh": 0, "export_wh": 1000, "ptot": 10_000, "stot": 11_000},
                 {"timestamp": datetime(2026, 8, 22, 0, 0), "meter_serial": "GRID", "import_wh": 1000, "export_wh": 0, "ptot": 20_000, "stot": 22_000},
+                {"timestamp": datetime(2026, 8, 22, 0, 0), "meter_serial": "LOAD", "import_wh": 1000, "export_wh": 0, "ptot": 35_000, "stot": 37_000},
             ],
             "inverters": [],
             "solcast": [],
@@ -135,6 +210,8 @@ class ContractPowerAggregationTests(TestCase):
         self.assertEqual(point["gridStot"], 22)
         self.assertEqual(point["site"], 30)
         self.assertEqual(point["siteStot"], 33)
+        self.assertEqual(point["load"], 35)
+        self.assertEqual(point["loadStot"], 37)
 
     def test_payload_preserves_tariff_pricing_result(self):
         site = {

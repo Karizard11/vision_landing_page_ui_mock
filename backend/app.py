@@ -18,6 +18,7 @@ from contracts import (
     query_contract_source,
 )
 from reporting_financials import load_municipal_financials
+from time_context import SAST, QueryWindow, build_query_window, doris_utc_to_sast, sast_bucket_datetime
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,7 @@ ENV_FILE = os.getenv("PRECOOL_DORIS_ENV_FILE")
 load_dotenv(ENV_FILE or PROJECT_ROOT / ".env")
 
 app = Flask(__name__)
+
 
 SYSTEM_KEY = "5ID4A"
 CAPACITY_KWP = 1851.33
@@ -41,7 +43,6 @@ METER_LABELS = {
 }
 SOLAR_SERIALS = {"230502183", "230508643"}
 INCOMER_SERIALS = set(METER_LABELS) - SOLAR_SERIALS
-DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 CHANNEL_PATTERN = re.compile(r"^(I|U)_DC(\d+)$", re.IGNORECASE)
 
 
@@ -65,25 +66,13 @@ def doris_connection():
     )
 
 
-def parse_range() -> tuple[date, date, datetime, datetime]:
-    from_value = request.args.get("from", "")
-    to_value = request.args.get("to", "")
-    if not DATE_PATTERN.fullmatch(from_value) or not DATE_PATTERN.fullmatch(to_value):
-        raise ValueError("from and to must be valid YYYY-MM-DD dates")
-    try:
-        start_day = datetime.strptime(from_value, "%Y-%m-%d").date()
-        end_day = datetime.strptime(to_value, "%Y-%m-%d").date()
-    except ValueError as error:
-        raise ValueError("from and to must be valid calendar dates") from error
-    if end_day < start_day:
-        raise ValueError("to must not be earlier than from")
-    if (end_day - start_day).days + 1 > MAX_RANGE_DAYS:
-        raise ValueError(f"date range must not exceed {MAX_RANGE_DAYS} days")
-    return (
-        start_day,
-        end_day,
-        datetime.combine(start_day, datetime.min.time()),
-        datetime.combine(end_day + timedelta(days=1), datetime.min.time()),
+def parse_range() -> QueryWindow:
+    return build_query_window(
+        request.args.get("from", ""),
+        request.args.get("to", ""),
+        request.args.get("from_time", "00:00"),
+        request.args.get("to_time", "23:59"),
+        max_days=MAX_RANGE_DAYS,
     )
 
 
@@ -156,6 +145,18 @@ def period_granularity(day_count: int) -> str:
     return "year"
 
 
+def with_window_metadata(payload: dict[str, Any], window: QueryWindow) -> dict[str, Any]:
+    payload.setdefault("range", {}).update({
+        "from": window.start_day.isoformat(),
+        "to": window.end_day.isoformat(),
+        "fromTime": window.from_time,
+        "toTime": window.to_time,
+        "timeZone": "Africa/Johannesburg",
+        "durationMinutes": window.duration_minutes,
+    })
+    return payload
+
+
 def available_channels(cursor) -> list[int]:
     cursor.execute("DESCRIBE vcom_inverter_data")
     current: set[int] = set()
@@ -208,13 +209,13 @@ def query_doris(start: datetime, end: datetime) -> dict[str, Any]:
             solcast_rows = select_rows(
                 cursor,
                 """
-                SELECT period_end AS timestamp, ghi
+                SELECT DATE_SUB(period_end, INTERVAL 30 MINUTE) AS timestamp, ghi
                 FROM solcast_data
                 WHERE system_key = %s
                   AND period_end >= %s AND period_end < %s
                 ORDER BY period_end
                 """,
-                (SYSTEM_KEY, start, end),
+                (SYSTEM_KEY, start + timedelta(minutes=30), end + timedelta(minutes=30)),
             )
             sensor_rows = select_rows(
                 cursor,
@@ -265,6 +266,11 @@ def query_doris(start: datetime, end: datetime) -> dict[str, Any]:
                     (SYSTEM_KEY, *pair_params),
                 )
 
+    for collection in (meter_rows, inverter_rows, solcast_rows, sensor_rows, telemetry_rows):
+        for row in collection:
+            if row.get("timestamp") is not None:
+                row["timestamp"] = doris_utc_to_sast(row["timestamp"])
+
     return {
         "channels": channels,
         "meters": meter_rows,
@@ -311,7 +317,7 @@ def telemetry_series_from_raw(
     bucket_minutes = {"5min": 5, "30min": 30, "hour": 60}[granularity]
     grouped: dict[datetime, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        timestamp = as_datetime(row["timestamp"])
+        timestamp = doris_utc_to_sast(row["timestamp"])
         minute_of_day = timestamp.hour * 60 + timestamp.minute
         start_minute = minute_of_day - minute_of_day % bucket_minutes
         bucket = timestamp.replace(
@@ -359,7 +365,7 @@ def telemetry_series_from_daily(
 ) -> list[dict[str, Any]]:
     grouped: dict[tuple[int, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        timestamp = as_datetime(row["bucket_time"])
+        timestamp = sast_bucket_datetime(row["bucket_time"])
         if granularity == "day":
             key = (timestamp.year, timestamp.month, timestamp.day)
         elif granularity == "month":
@@ -371,13 +377,13 @@ def telemetry_series_from_daily(
     series: list[dict[str, Any]] = []
     for key, bucket_rows in sorted(grouped.items()):
         if granularity == "day":
-            timestamp = datetime(key[0], key[1], key[2])
+            timestamp = datetime(key[0], key[1], key[2], tzinfo=SAST)
             label = timestamp.strftime("%d %b")
         elif granularity == "month":
-            timestamp = datetime(key[0], key[1], 1)
+            timestamp = datetime(key[0], key[1], 1, tzinfo=SAST)
             label = timestamp.strftime("%b %Y")
         else:
-            timestamp = datetime(key[0], 1, 1)
+            timestamp = datetime(key[0], 1, 1, tzinfo=SAST)
             label = str(key[0])
         combined: dict[str, Any] = {}
         for channel in channels:
@@ -406,13 +412,14 @@ def telemetry_series_from_daily(
 
 
 def query_inverter_telemetry(
-    start_day: date,
-    end_day: date,
-    start: datetime,
-    end: datetime,
+    window: QueryWindow,
     requested_code: str,
 ) -> dict[str, Any]:
-    day_count = (end_day - start_day).days + 1
+    start_day = window.start_day
+    end_day = window.end_day
+    start = window.start_utc
+    end = window.end_utc
+    day_count = window.duration_day_count
     granularity = period_granularity(day_count)
     with doris_connection() as connection:
         with connection.cursor() as cursor:
@@ -479,13 +486,13 @@ def query_inverter_telemetry(
                 rows = select_rows(
                     cursor,
                     f"""
-                    SELECT DATE(timestamp) AS bucket_time, COUNT(*) AS sample_count,
+                    SELECT DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR)) AS bucket_time, COUNT(*) AS sample_count,
                            {summary_select}
                     FROM vcom_inverter_data
                     WHERE system_key = %s AND inverter_id = %s
                       AND timestamp >= %s AND timestamp < %s
-                    GROUP BY DATE(timestamp)
-                    ORDER BY DATE(timestamp)
+                    GROUP BY DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR))
+                    ORDER BY DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR))
                     """,
                     (SYSTEM_KEY, inverter_id, start, end),
                 )
@@ -497,13 +504,16 @@ def query_inverter_telemetry(
         "range": {
             "from": start_day.isoformat(),
             "to": end_day.isoformat(),
+            "fromTime": window.from_time,
+            "toTime": window.to_time,
+            "timeZone": "Africa/Johannesburg",
             "granularity": granularity,
             "powerUnit": power_unit,
         },
         "inverterCode": requested_code,
         "inverterId": inverter_id,
         "snapshot": {
-            "capturedAt": as_datetime(latest["timestamp"]).isoformat(),
+            "capturedAt": doris_utc_to_sast(latest["timestamp"]).isoformat(),
             "channels": channel_values(latest, channels),
         } if latest else None,
         "series": series,
@@ -517,7 +527,7 @@ def query_doris_daily(start: datetime, end: datetime) -> dict[str, Any]:
             meters = select_rows(
                 cursor,
                 f"""
-                SELECT DATE(timestamp) AS bucket_date, meter_serial,
+                SELECT DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR)) AS bucket_date, meter_serial,
                        MIN(import_wh) AS import_start,
                        MAX(import_wh) AS import_end,
                        MIN(export_wh) AS export_start,
@@ -528,15 +538,15 @@ def query_doris_daily(start: datetime, end: datetime) -> dict[str, Any]:
                 FROM electricity_energy_power
                 WHERE meter_serial IN ({serial_placeholders})
                   AND timestamp >= %s AND timestamp < %s
-                GROUP BY DATE(timestamp), meter_serial
-                ORDER BY DATE(timestamp), meter_serial
+                GROUP BY DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR)), meter_serial
+                ORDER BY DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR)), meter_serial
                 """,
                 (*METER_LABELS.keys(), start, end),
             )
             inverters = select_rows(
                 cursor,
                 """
-                SELECT DATE(d.timestamp) AS bucket_date, d.inverter_id,
+                SELECT DATE(DATE_ADD(d.timestamp, INTERVAL 2 HOUR)) AS bucket_date, d.inverter_id,
                        i.inverter_name, i.inverter_model,
                        MAX(d.P_AC) AS peak_ac,
                        MAX(d.P_DC) AS peak_dc,
@@ -548,36 +558,36 @@ def query_doris_daily(start: datetime, end: datetime) -> dict[str, Any]:
                   ON d.system_key = i.system_key AND d.inverter_id = i.inverter_id
                 WHERE d.system_key = %s
                   AND d.timestamp >= %s AND d.timestamp < %s
-                GROUP BY DATE(d.timestamp), d.inverter_id, i.inverter_name, i.inverter_model
-                ORDER BY DATE(d.timestamp), d.inverter_id
+                GROUP BY DATE(DATE_ADD(d.timestamp, INTERVAL 2 HOUR)), d.inverter_id, i.inverter_name, i.inverter_model
+                ORDER BY DATE(DATE_ADD(d.timestamp, INTERVAL 2 HOUR)), d.inverter_id
                 """,
                 (SYSTEM_KEY, start, end),
             )
             solcast = select_rows(
                 cursor,
                 """
-                SELECT DATE(period_end) AS bucket_date,
+                SELECT DATE(DATE_ADD(period_end, INTERVAL 90 MINUTE)) AS bucket_date,
                        SUM(ghi) * 0.5 / 1000 AS irradiation_kwh_m2,
                        MAX(ghi) AS peak_ghi
                 FROM solcast_data
                 WHERE system_key = %s
                   AND period_end >= %s AND period_end < %s
-                GROUP BY DATE(period_end)
-                ORDER BY DATE(period_end)
+                GROUP BY DATE(DATE_ADD(period_end, INTERVAL 90 MINUTE))
+                ORDER BY DATE(DATE_ADD(period_end, INTERVAL 90 MINUTE))
                 """,
-                (SYSTEM_KEY, start, end),
+                (SYSTEM_KEY, start + timedelta(minutes=30), end + timedelta(minutes=30)),
             )
             sensors = select_rows(
                 cursor,
                 """
-                SELECT DATE(timestamp) AS bucket_date,
+                SELECT DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR)) AS bucket_date,
                        MAX(SRAD) AS peak_srad,
                        COUNT(*) AS readings
                 FROM vcom_sensor_data
                 WHERE system_key = %s
                   AND timestamp >= %s AND timestamp < %s
-                GROUP BY DATE(timestamp)
-                ORDER BY DATE(timestamp)
+                GROUP BY DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR))
+                ORDER BY DATE(DATE_ADD(timestamp, INTERVAL 2 HOUR))
                 """,
                 (SYSTEM_KEY, start, end),
             )
@@ -756,7 +766,7 @@ def aggregate_daily_payload(
             "meterSource": "electricity_energy_power",
             "inverterSource": "vcom_inverter_data",
             "irradianceSource": "solcast_data",
-            "dataAsOf": as_datetime(latest).isoformat() if latest else None,
+            "dataAsOf": doris_utc_to_sast(latest).isoformat() if latest else None,
         },
         "days": days,
     }
@@ -1047,7 +1057,7 @@ def contracts():
 @app.get("/api/site")
 def contract_site():
     try:
-        start_day, end_day, start, end = parse_range()
+        window = parse_range()
         contract_id = request.args.get("contract_id", "")
         if not re.fullmatch(r"\d+", contract_id):
             raise ValueError("contract_id must be numeric")
@@ -1059,26 +1069,29 @@ def contract_site():
             source = query_contract_source(
                 connection,
                 site,
-                start,
-                end,
-                daily=(end_day - start_day).days + 1 > 14,
+                window.start_utc,
+                window.end_utc,
+                daily=window.duration_day_count > 14,
             )
         financials = {
             "municipal": load_municipal_financials(
                 site.get("municipalTotalDeviceNodeId"),
-                start_day,
-                end_day,
+                window.start_day,
+                window.end_day,
+                full_day_selection=window.is_full_day_selection,
             )
         }
-        response = jsonify(
+        payload = with_window_metadata(
             aggregate_contract_payload(
                 site,
-                start_day,
-                end_day,
+                window.start_day,
+                window.end_day,
                 source,
                 financials,
-            )
+            ),
+            window,
         )
+        response = jsonify(payload)
         response.headers["Cache-Control"] = "private, no-store"
         return response
     except ValueError as error:
@@ -1093,15 +1106,14 @@ def contract_site():
 @app.get("/api/precool")
 def precool():
     try:
-        start_day, end_day, start, end = parse_range()
-        day_count = (end_day - start_day).days + 1
-        if day_count > 14:
-            source = query_doris_daily(start, end)
-            payload = aggregate_daily_payload(start_day, end_day, source)
+        window = parse_range()
+        if window.duration_day_count > 14:
+            source = query_doris_daily(window.start_utc, window.end_utc)
+            payload = aggregate_daily_payload(window.start_day, window.end_day, source)
         else:
-            source = query_doris(start, end)
-            payload = aggregate_payload(start_day, end_day, source)
-        response = jsonify(payload)
+            source = query_doris(window.start_utc, window.end_utc)
+            payload = aggregate_payload(window.start_day, window.end_day, source)
+        response = jsonify(with_window_metadata(payload, window))
         response.headers["Cache-Control"] = "private, no-store"
         return response
     except ValueError as error:
@@ -1116,16 +1128,13 @@ def precool():
 @app.get("/api/precool/telemetry")
 def precool_telemetry():
     try:
-        start_day, end_day, start, end = parse_range()
+        window = parse_range()
         requested_code = request.args.get("inverter", "").zfill(2)
         if not re.fullmatch(r"\d{2}", requested_code):
             raise ValueError("inverter must be a one or two digit code")
         response = jsonify(
             query_inverter_telemetry(
-                start_day,
-                end_day,
-                start,
-                end,
+                window,
                 requested_code,
             )
         )
@@ -1142,7 +1151,7 @@ def precool_telemetry():
 
 if __name__ == "__main__":
     app.run(
-        host="127.0.0.1",
+        host=os.getenv("DORIS_API_HOST", "127.0.0.1"),
         port=int(os.getenv("DORIS_API_PORT", "8788")),
         debug=False,
         threaded=True,

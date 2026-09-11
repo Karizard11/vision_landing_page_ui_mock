@@ -19,6 +19,22 @@ test("the interface has no View dashboard action", () => {
   assert.doesNotMatch(component, /View dashboard/);
 });
 
+test("dashboard mode is contextual and excluded from inverter views", () => {
+  assert.match(component, /view\.kind === "site" \|\| view\.kind === "meter"/);
+  assert.match(component, /onModeChange\("dashboard"\)/);
+  assert.match(component, /function SiteDashboardView/);
+  assert.match(component, /function MeterDashboardView/);
+  assert.match(component, /surfaceMode === "dashboard"/);
+});
+
+test("dashboard panels use selected-period data without legacy dial gauges", () => {
+  assert.match(component, /function dashboardPeriodRows/);
+  assert.match(component, /period\.financials/);
+  assert.match(component, /function selectedMeterSnapshot/);
+  assert.doesNotMatch(component, /Current Power Factor/);
+  assert.doesNotMatch(component, /Current Voltage/);
+});
+
 test("municipal and solar financial language keeps pricing boundaries explicit", () => {
   assert.match(component, /Municipal electricity cost build-up/);
   assert.match(component, /canonical reporting tariff-pricing engine/);
@@ -38,6 +54,14 @@ test("meter power charts expose Ptot and Stot for site, municipal, and solar tot
   }
   assert.match(contractsApi,/SELECT timestamp, meter_serial, import_wh, export_wh, ptot, stot/);
   assert.match(contractsApi,/point\["siteStot"\]/);
+});
+
+test("load totals and virtual load nodes retain real Ptot and Stot series", () => {
+  assert.match(component,/key === "load"/);
+  assert.match(component,/Meters and loads/);
+  assert.match(contractsApi,/point\["load"\]/);
+  assert.match(contractsApi,/point\["loadStot"\]/);
+  assert.match(contractsApi,/measurementKind.*calculated/);
 });
 
 test("Vercel deploys the Next.js UI and private Doris backend as bound services", () => {
