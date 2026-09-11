@@ -1,7 +1,9 @@
 """Read-only, contract-scoped prediction and solar performance read model.
 
-Doris event times are UTC. PVModel is hourly mean kW; PVSOL horiz_flux is
-hourly kWh/m2. Solcast GHI is W/m2, timestamped at the end of 30 minutes.
+PVModel/PVSOL profile timestamps and dated forecasts use contract-local wall time.
+Meter and Solcast event times are UTC. PVModel is hourly mean kW; PVSOL
+horiz_flux is hourly kWh/m2. Solcast GHI is W/m2, timestamped at the end
+of 30 minutes.
 Missing intervals are never manufactured as zero.
 """
 from __future__ import annotations
@@ -9,9 +11,10 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from contracts import _optional_number as number, _select
-from time_context import QueryWindow, doris_utc_to_sast
+from contracts import _optional_number as number, _select, contract_time_zone
+from time_context import QueryWindow, UTC, doris_utc_to_sast
 
 HOUR = timedelta(hours=1)
 FIVE = timedelta(minutes=5)
@@ -26,6 +29,15 @@ def query_performance_sources(connection, site: dict, window: QueryWindow) -> di
     start, end = window.start_utc, window.end_utc
     floor_start = start.replace(minute=0, second=0, microsecond=0)
     ceil_end = end.replace(minute=0, second=0, microsecond=0) + HOUR
+    # Forecast timestamps are contract-local wall time, unlike UTC telemetry.
+    model_zone = contract_time_zone(site)
+    prediction_start = window.start_sast.astimezone(model_zone).replace(tzinfo=None, minute=0, second=0, microsecond=0)
+    local_end = window.end_sast_exclusive.astimezone(model_zone).replace(tzinfo=None)
+    prediction_end = local_end.replace(minute=0, second=0, microsecond=0)
+    if prediction_end < local_end:
+        prediction_end += HOUR
+    # A repeated DST hour can end at an earlier local clock reading.
+    prediction_end = max(prediction_end, prediction_start + HOUR)
     serials = sorted(set(site.get("solarMeterSerials", [])))
     # Do not substitute every solar meter on the physical site: different
     # contracts/phases may share that site but have different measurement scopes.
@@ -38,7 +50,7 @@ def query_performance_sources(connection, site: dict, window: QueryWindow) -> di
             JOIN pv_model m ON m.contract_id = f.contract_id AND m.timestamp = f.pv_model_timestamp
             WHERE f.contract_id = %s AND f.contract_timestamp >= %s AND f.contract_timestamp < %s
             ORDER BY f.contract_timestamp, f.forecast_year
-        """, (site["contractId"], floor_start, ceil_end))
+        """, (site["contractId"], prediction_start, prediction_end))
         # The annual source profile is contract-specific; never join by system key.
         model = []
         if not predictions:
@@ -93,11 +105,19 @@ def query_performance_sources(connection, site: dict, window: QueryWindow) -> di
             "weather": weather, "serials": serials, "stepMinutes": 60 if coarse else 5}
 
 
-def _annual_profile(rows: list[dict], field: str) -> tuple[dict, int | None]:
+def _contract_local(value: Any, zone: ZoneInfo) -> datetime:
+    at = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    # Naive prediction timestamps are local already: attach, do not shift.
+    return at.replace(tzinfo=zone) if at.tzinfo is None else at.astimezone(zone)
+
+
+def _annual_profile(rows: list[dict], field: str, zone: ZoneInfo) -> tuple[dict, int | None]:
     # Select one reference year; holes remain unavailable rather than mixing versions.
-    year = max((r["timestamp"].year for r in rows), default=None)
-    return {(r["timestamp"].month, r["timestamp"].day, r["timestamp"].hour): number(r[field])
-            for r in rows if r["timestamp"].year == year}, year
+    # Preserve each contract's local source hour, including its reference-year date.
+    local_rows = [(_contract_local(row["timestamp"], zone), number(row[field])) for row in rows]
+    year = max((at.year for at, _ in local_rows), default=None)
+    return {(at.month, at.day, at.hour): value
+            for at, value in local_rows if at.year == year}, year
 
 
 def _bucket(at: datetime, resolution: str) -> str:
@@ -116,14 +136,15 @@ def _ratio(a, b, scale=100):
 
 
 def build_contract_performance(site: dict, window: QueryWindow, source: dict) -> dict[str, Any]:
+    model_zone = contract_time_zone(site)
     resolution = granularity(window.duration_minutes)
     step = timedelta(minutes=source["stepMinutes"])
     seconds_per_step = step.total_seconds()
-    model, model_year = _annual_profile(source["model"], "system_output_power_kw")
-    pvsol, pvsol_year = _annual_profile(source["pvsol"], "horiz_flux")
+    model, model_year = _annual_profile(source["model"], "system_output_power_kw", model_zone)
+    pvsol, pvsol_year = _annual_profile(source["pvsol"], "horiz_flux", model_zone)
     predictions: dict[datetime, list[dict]] = defaultdict(list)
     for row in source["predictions"]:
-        predictions[row["timestamp"]].append(row)
+        predictions[_contract_local(row["timestamp"], model_zone).replace(tzinfo=None)].append(row)
     solar = {row["timestamp"]: row for row in source["solar"]}
     weather = {row["timestamp"]: number(row["ghi"]) for row in source["weather"]}
     capacity = number(site.get("capacityKwp"))
@@ -153,12 +174,23 @@ def build_contract_performance(site: dict, window: QueryWindow, source: dict) ->
     before_coco = False
     last_actual = None
     while at < window.end_utc:
-        left, right = max(at, window.start_utc), min(at + step, window.end_utc)
+        local_at = at.replace(tzinfo=UTC).astimezone(model_zone)
+        interval_end = at + step
+        if source["stepMinutes"] == 60:
+            # A UTC telemetry hour may span two contract-local model hours.
+            # Split its allocation at both boundaries (e.g. UTC+05:30).
+            interval_end = min(at.replace(minute=0) + HOUR,
+                               at + timedelta(minutes=60 - local_at.minute))
+        left, right = max(at, window.start_utc), min(interval_end, window.end_utc)
+        if right <= left:
+            at = interval_end
+            continue
         seconds = (right - left).total_seconds()
         hours = seconds / 3600
         hour = at.replace(minute=0)
-        profile_key = (hour.month, hour.day, hour.hour)
-        options = predictions.get(hour, [])
+        local_hour = local_at.replace(minute=0, tzinfo=None)
+        profile_key = (local_hour.month, local_hour.day, local_hour.hour)
+        options = predictions.get(local_hour, [])
         p = None
         guarantee = None
         if len(options) == 1:
@@ -173,7 +205,7 @@ def build_contract_performance(site: dict, window: QueryWindow, source: dict) ->
         elif not predictions and profile_key in model:
             kw = model[profile_key]
             factor = 1.0
-            local_date = doris_utc_to_sast(at).date()
+            local_date = local_at.date()
             if coco_day and local_date < coco_day:
                 before_coco = True
                 kw = None
@@ -182,7 +214,7 @@ def build_contract_performance(site: dict, window: QueryWindow, source: dict) ->
                 factor = max(0, 1 - years * degradation_pct / 100)
             p = kw * factor * hours if kw is not None and kw >= 0 else None
             guarantee = p * guarantee_pct / 100 if p is not None and guarantee_pct is not None and 0 < guarantee_pct <= 100 else None
-        actual_row = solar.get(at)
+        actual_row = solar.get(hour if source["stepMinutes"] == 60 else at)
         # Hourly aggregation is used only for full-day-or-larger chart buckets.
         valid_seconds = number(actual_row.get("valid_seconds")) if actual_row else 0
         a = number(actual_row.get("energy_kwh")) if actual_row else None
@@ -235,7 +267,7 @@ def build_contract_performance(site: dict, window: QueryWindow, source: dict) ->
                     b[name] += value
                     totals[name] += value
                 totals["explanationSeconds"] += seconds
-        at += step
+        at = interval_end
     for b in buckets.values():
         b["actualCoverage"] = _ratio(b["actualSeconds"], b["seconds"])
         b["predictionCoverage"] = _ratio(b["predictionSeconds"], b["seconds"])
@@ -274,7 +306,8 @@ def build_contract_performance(site: dict, window: QueryWindow, source: dict) ->
         },
         "provenance": {
             "prediction": "mv_pv_model_forecasts → pv_model" if predictions else "pv_model annual profile",
-            "predictionResolution": "hourly; allocated by overlap for shorter selections",
+            "predictionTimeZone": model_zone.key,
+            "predictionResolution": f"hourly contract-local time ({model_zone.key}); local timestamps preserved; allocated by overlap for shorter selections",
             "pvsolReferenceYear": pvsol_year, "modelReferenceYear": model_year,
             "irradiance": "pv_sol.horiz_flux (kWh/m²/hour) and solcast_data.ghi (W/m²)",
             "actual": "Solar meter export register deltas; readings aligned to five-minute slots, gaps excluded",

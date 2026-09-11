@@ -21,6 +21,7 @@ export type PortfolioSite = {
   accountId?: string;
   accountName?: string;
   contractType?: string;
+  contractTimeZone?: string;
   cocoDate?: string | null;
   degradationPercent?: number | null;
   simulatedPrPercent?: number | null;

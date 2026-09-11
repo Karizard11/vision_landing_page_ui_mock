@@ -237,13 +237,15 @@ Every API series should declare `metric`, `unit`, `statistic` (`mean`, `sum`, `m
 
 ## Time architecture
 
-Doris telemetry timestamps are UTC. Use half-open intervals for Doris queries: `[window_start_utc, window_end_utc)`. The UI captures an inclusive SAST date and minute range; the backend adds one minute to its selected end, converts both boundaries to UTC, and queries Doris with those UTC-naive values.
+Doris meter, inverter, sensor, and Solcast telemetry timestamps are UTC. PVModel and PVSOL prediction timestamps are in the contract’s local timezone and must not be interpreted as UTC. Terradew Four and Redefine Properties contracts use SAST. Use half-open intervals for UTC telemetry queries: `[window_start_utc, window_end_utc)`. The UI captures an inclusive SAST date and minute range; the backend adds one minute to its selected end, converts both boundaries to UTC, and queries Doris with those UTC-naive values.
 
 Canonical policy:
 
 - Business timezone: `Africa/Johannesburg` unless a validated site-specific IANA timezone overrides it.
 - Query input: UI dates and times are SAST. Default full-day selections are `00:00` through `23:59` SAST.
-- Doris storage: telemetry timestamps are UTC and must never be bucketed as local wall time.
+- Doris telemetry storage: meter, inverter, sensor, and Solcast timestamps are UTC and must never be bucketed as local wall time.
+- Prediction storage: `pv_model.timestamp`, `pv_sol.timestamp`, and dated `mv_pv_model_forecasts.contract_timestamp` use the contract’s local wall time. Preserve the source hour/date; query forecasts and match annual profiles in the contract’s IANA `contractTimeZone`. A 10:00 local model value for a SAST contract aligns to 08:00 UTC telemetry; it must not appear at 12:00 SAST.
+- Contract timezone configuration: explicit `contractTimeZone` takes priority. The confirmed TD4 and Redefine portfolio settings are `Africa/Johannesburg`; no universal SAST default applies to other contracts. The current Doris contract view does not expose an IANA timezone, and VCOM’s numeric `utc_offset` is not a substitute for a named zone. Reject missing/invalid settings for unconfirmed portfolios. Preserve seasonal offsets and split hourly allocations at local model-hour boundaries.
 - API output: timestamps, source watermarks, and chart bucket instants are emitted as SAST ISO-8601 values with `+02:00`; range metadata includes `timeZone: Africa/Johannesburg`.
 - Solcast semantics: `period_end` is the end of a 30-minute measurement period. Subtract 30 minutes before chart alignment, then convert the resulting interval start from UTC to SAST.
 - Selected end minute: include it by querying to one minute after it; a selection of `10:00`–`10:30` maps to `[08:00, 08:31)` in Doris UTC.
@@ -470,7 +472,7 @@ Keep the pricing engine's canonical configuration and arithmetic in the reportin
 
 These do not block the architecture but must be resolved before the relevant semantic model is declared authoritative:
 
-1. **Confirmed:** Doris telemetry timestamps are UTC; Vision query ranges and display buckets use SAST.
+1. **Confirmed:** Doris meter/inverter/sensor/Solcast telemetry timestamps are UTC; PVModel/PVSOL and their dated forecast hours are contract-local (SAST for TD4 and Redefine). Vision query ranges and display buckets use SAST, with query bounds chosen per source.
 2. Are `ptot`, `qtot`, and `stot` stored in W/var/VA, and what are the import/export sign conventions?
 3. Are VCOM `P_AC`/`P_DC` in W and `E_DAY`/`E_TOTAL` in kWh for every inverter model and scale factor?
 4. Does `SRAD` represent W/m² in the array plane, and should Solcast `ghi` or `gti` drive expected production?

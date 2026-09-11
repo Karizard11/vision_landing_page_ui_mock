@@ -9,7 +9,7 @@ class ContractScopeTests(unittest.TestCase):
         connection = MagicMock()
         cursor = connection.cursor.return_value.__enter__.return_value
         cursor.fetchall.return_value = []
-        site = {"contractId": "7", "solarMeterSerials": [], "systemKey": "", "nodes": [
+        site = {"contractId": "7", "contractTimeZone": "Africa/Johannesburg", "solarMeterSerials": [], "systemKey": "", "nodes": [
             {"type": "Solar", "meterSerials": ["another-phase"]},
         ]}
         window = build_query_window("2026-08-22", "2026-08-22", max_days=3660)
@@ -22,7 +22,7 @@ class ContractScopeTests(unittest.TestCase):
         cursor = connection.cursor.return_value.__enter__.return_value
         cursor.fetchall.return_value = []
         window = build_query_window("2026-08-22", "2026-08-22", max_days=3660)
-        query_performance_sources(connection, {"contractId":"7","solarMeterSerials":[],"nodes":[]}, window)
+        query_performance_sources(connection, {"contractId":"7","contractTimeZone":"Africa/Johannesburg","solarMeterSerials":[],"nodes":[]}, window)
         sql, params = cursor.execute.call_args_list[0].args
         self.assertIn("m.contract_id = f.contract_id", sql)
         self.assertIn("m.timestamp = f.pv_model_timestamp", sql)

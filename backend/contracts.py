@@ -5,13 +5,14 @@ import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from time_context import doris_utc_to_sast, sast_bucket_datetime
 
 
 PROVIDER_NAME = "Terradew Four"
 PORTFOLIOS = [
-    {"id": "terradew-four", "name": "Terradew Four", "scope": "provider"},
-    {"id": "redefine-properties", "name": "Redefine Properties", "scope": "account", "contractType": "epc"},
+    {"id": "terradew-four", "name": "Terradew Four", "scope": "provider", "contractTimeZone": "Africa/Johannesburg"},
+    {"id": "redefine-properties", "name": "Redefine Properties", "scope": "account", "contractType": "epc", "contractTimeZone": "Africa/Johannesburg"},
 ]
 EXPECTED_READINGS_PER_DAY = 288
 
@@ -33,6 +34,20 @@ def _optional_number(value: Any) -> float | None:
 
 def _text(value: Any) -> str:
     return "" if value is None else str(value).strip()
+
+
+def contract_time_zone(site: dict) -> ZoneInfo:
+    """Resolve an explicit contract zone, or a confirmed portfolio setting only."""
+    name = _text(site.get("contractTimeZone"))
+    if not name:
+        portfolio = next((p for p in PORTFOLIOS if p["id"] == site.get("portfolioId")), {})
+        name = _text(portfolio.get("contractTimeZone"))
+    if not name:
+        raise ValueError("Contract local timezone is not configured.")
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as error:
+        raise ValueError("Contract local timezone must be a valid IANA timezone.") from error
 
 
 def _identifier(value: Any) -> str:
@@ -348,9 +363,11 @@ def query_contract_catalog(connection) -> list[dict[str, Any]]:
             for serial in node.get("meterSerials", [])
         }
         commissioned = row.get("practical_completion_date") or row.get("commission_date")
+        portfolio_id = "redefine-properties" if _identifier(row.get("account_id")) == "110" and _text(row.get("contract_type")).lower() == "epc" else "terradew-four"
         sites.append({
             "contractId": _identifier(row.get("contract_id")),
-            "portfolioId": "redefine-properties" if _identifier(row.get("account_id")) == "110" and _text(row.get("contract_type")).lower() == "epc" else "terradew-four",
+            "portfolioId": portfolio_id,
+            "contractTimeZone": contract_time_zone({"portfolioId": portfolio_id}).key,
             "accountId": _identifier(row.get("account_id")),
             "accountName": _text(row.get("account_name")),
             "contractType": _text(row.get("contract_type")),
