@@ -18,14 +18,15 @@ import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { contractSiteLabel, isLoadNode, isVirtualTotalNode, portfolioSites, siteNavigationNodes, type PortfolioNavigationNode, type PortfolioNode, type PortfolioSite } from "@/lib/portfolio-data";
+import { SiteContractPerformance } from "@/components/site-contract-performance";
+import { contractSiteLabel, portfolios, siteNavigationId, sitesForPortfolio, isVirtualTotalNode, portfolioSites, siteNavigationNodes, type PortfolioNavigationNode, type PortfolioNode, type PortfolioSite } from "@/lib/portfolio-data";
 import { inverterConfiguration, inverterSummary as inverterMetadata, type InverterElectricalConfig } from "@/lib/precool-data";
 import { buildInverterEnergySeries, buildInverterHeatmap } from "@/lib/inverter-analytics";
 import { DEFAULT_PRECOOL_DATE, getPrecoolPeriod, type PrecoolDataset, type PrecoolMeterSnapshot, type PrecoolPeriod, type PrecoolTelemetryHistory } from "@/lib/precool-period";
 import { periodResolutionLabel, periodUsesBars } from "@/lib/period-resolution";
 
 type View =
-  | { kind: "portfolio" }
+  | { kind: "portfolio"; portfolioId?: string }
   | { kind: "site"; siteCode: string }
   | { kind: "meter"; siteCode: string; nodeId: string }
   | { kind: "inverters"; siteCode: "P0480" }
@@ -41,7 +42,6 @@ const anchorDate = new Date(`${DEFAULT_PRECOOL_DATE}T00:00:00`);
 const today = new Date();
 const chartMargin = { top: 8, right: 12, left: -20, bottom: 0 };
 const inverterColours = ["#0c5a63","#14717b","#23848c","#3f969b","#63aaab","#86bbbb","#f1b14b","#ed9b43","#ec8446","#ed6a4e","#d85448","#a94545"];
-const monthPlan = (siteItem: PortfolioSite) => ["Mar","Apr","May","Jun","Jul","Aug"].map((month, index) => ({ month, plan: Math.round(siteItem.annualYieldKwh / 12 / 1000), actual: index === 5 && siteItem.code === "P0480" ? 203 : Math.round(siteItem.annualYieldKwh / 12 / 1000 * (.91 + index * .012)) }));
 
 function useChartSeriesVisibility(fontSize = 8) {
   const [hiddenSeries,setHiddenSeries] = useState<Set<string>>(() => new Set());
@@ -96,8 +96,8 @@ function num(value: number, digits = 1) {
 
 function selectedSite(view: View, sites: PortfolioSite[]) {
   const fallback = sites.find(item => item.code === "P0480") ?? portfolioSites.find(item => item.code === "P0480")!;
-  if (view.kind === "portfolio") return fallback;
-  return sites.find(item => item.code === view.siteCode) ?? fallback;
+  if (view.kind === "portfolio") return view.portfolioId === "redefine-properties" ? sitesForPortfolio(sites,view.portfolioId)[0] ?? fallback : fallback;
+  return sites.find(item => siteNavigationId(item) === view.siteCode) ?? sites.find(item => item.code === view.siteCode) ?? fallback;
 }
 
 function p0480MeterId(nodeId: string) {
@@ -178,11 +178,12 @@ function NodeIcon({ type }: { type: string }) {
 
 function NavigationSidebar({ view, navigate, sites }: { view: View; navigate: Navigate; sites: PortfolioSite[] }) {
   const current = selectedSite(view,sites);
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["P0480"]));
+  const selectedPortfolio = view.kind === "portfolio" ? view.portfolioId ?? "terradew-four" : current.portfolioId ?? "terradew-four";
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["P0480:3"]));
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(() => new Set());
   const [query, setQuery] = useState("");
   const visibleSites = sites.filter(item => !query || `${item.name} ${item.code}`.toLowerCase().includes(query.toLowerCase()));
-  function openSite(item: PortfolioSite) { setExpanded(previous => { const next = new Set(previous); if (next.has(item.code) && current.code === item.code) next.delete(item.code); else next.add(item.code); return next; }); navigate({kind:"site",siteCode:item.code}); }
+  function openSite(item: PortfolioSite) { setExpanded(previous => { const next = new Set(previous); if (next.has(siteNavigationId(item)) && siteNavigationId(current) === siteNavigationId(item)) next.delete(siteNavigationId(item)); else next.add(siteNavigationId(item)); return next; }); navigate({kind:"site",siteCode:siteNavigationId(item)}); }
   function toggleNode(key: string) { setCollapsedNodes(previous => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next; }); }
   return <Sidebar collapsible="icon" className="navigation-sidebar">
     <div className="teal-rail">
@@ -195,26 +196,28 @@ function NavigationSidebar({ view, navigate, sites }: { view: View; navigate: Na
       <div className="navigation-title"><strong>Navigation</strong><Network/></div>
       <label className="nav-search"><Search/><input aria-label="Search sites" placeholder="Search" value={query} onChange={event => setQuery(event.target.value)}/></label>
       <div className="navigation-tree">
-        <button className={`provider-row ${view.kind === "portfolio" ? "active" : ""}`} onClick={() => navigate({kind:"portfolio"})}><ChevronDown/><Layers3/><span>Terradew Four</span><small>({sites.length})</small></button>
-        {visibleSites.map(item => { const activeSite = view.kind !== "portfolio" && view.siteCode === item.code; const isOpen = expanded.has(item.code) || activeSite; const navigationNodes = siteNavigationNodes(item); return <div className="site-tree" key={item.code}>
+        {portfolios.map(portfolio => <div key={portfolio.id} className="portfolio-tree">
+        <button className={`provider-row ${selectedPortfolio === portfolio.id ? "active" : ""}`} onClick={() => navigate({kind:"portfolio",portfolioId:portfolio.id})} title={portfolio.description}>{selectedPortfolio===portfolio.id?<ChevronDown/>:<ChevronRight/>}<Layers3/><span>{portfolio.name}</span><small>({sitesForPortfolio(sites,portfolio.id).length})</small></button>
+        {(selectedPortfolio === portfolio.id || query ? sitesForPortfolio(visibleSites,portfolio.id) : []).map(item => { const activeSite = view.kind !== "portfolio" && (view.siteCode === siteNavigationId(item) || view.siteCode === item.code); const isOpen = expanded.has(siteNavigationId(item)) || activeSite; const navigationNodes = siteNavigationNodes(item); return <div className="site-tree" key={siteNavigationId(item)}>
           <button className={`site-tree-row ${activeSite ? "active" : ""}`} onClick={() => openSite(item)} title={`Contract ${item.contractId ?? "unavailable"}`}><ChevronRight className={isOpen ? "rotated" : ""}/><Building2/><span>{item.displayName ?? contractSiteLabel(item)}</span><small>({item.meterCount})</small></button>
           {isOpen && <div className="site-node-list">{navigationNodes.map(node => {
-            const collapseKey = `${item.code}:${node.navigationKey}`;
-            if (!navigationNodeIsVisible(item.code,node,navigationNodes,collapsedNodes)) return null;
-            const activeNode = view.kind === "meter" && view.siteCode === item.code && view.nodeId === node.navigationKey;
+            const collapseKey = `${siteNavigationId(item)}:${node.navigationKey}`;
+            if (!navigationNodeIsVisible(siteNavigationId(item),node,navigationNodes,collapsedNodes)) return null;
+            const activeNode = view.kind === "meter" && view.siteCode === siteNavigationId(item) && view.nodeId === node.navigationKey;
             const branchInverters = item.code !== "P0480" ? [] : node.id === "1140730" ? inverterMetadata.slice(0,6) : node.id === "1140721" ? inverterMetadata.slice(6,12) : [];
             const hasChildren = navigationNodes.some(candidate => candidate.parentId === node.navigationKey) || branchInverters.length > 0 || (item.code === "P0480" && node.id === "1140723");
             const isExpanded = !collapsedNodes.has(collapseKey);
             return <div className="node-branch" key={`${item.code}-${node.navigationKey}`}>
               <div style={{paddingLeft:20 + nodeDepth(node,navigationNodes) * 14}} className={`node-row node-parent-row ${activeNode ? "active" : ""}`}>
                 {hasChildren ? <button type="button" className="node-toggle" aria-label={`${isExpanded ? "Collapse" : "Expand"} ${node.name}`} aria-expanded={isExpanded} onClick={() => toggleNode(collapseKey)}><ChevronRight className={isExpanded ? "rotated" : ""}/></button> : <span className="node-toggle-spacer"/>}
-                <button type="button" className="node-link" onClick={() => navigate({kind:"meter",siteCode:item.code,nodeId:node.navigationKey})}><NodeIcon type={node.type}/><span>{node.name}</span>{node.measurementKind === "calculated" && !isVirtualTotalNode(node) ? <small className="virtual-node-label">virtual</small> : node.meters > 1 && <small>{node.meters}</small>}</button>
+                <button type="button" className="node-link" onClick={() => navigate({kind:"meter",siteCode:siteNavigationId(item),nodeId:node.navigationKey})}><NodeIcon type={node.type}/><span>{node.name}</span>{node.measurementKind === "calculated" && !isVirtualTotalNode(node) ? <small className="virtual-node-label">virtual</small> : node.meters > 1 && <small>{node.meters}</small>}</button>
               </div>
               {isExpanded && item.code === "P0480" && node.id === "1140723" && <button style={{paddingLeft:20 + (nodeDepth(node,navigationNodes)+1) * 14}} className={`node-row inverter-node ${view.kind === "inverters" ? "active" : ""}`} onClick={() => navigate({kind:"inverters",siteCode:"P0480"})}><span className="node-toggle-spacer"/><Layers3/><span>Inverter total</span><small>12</small></button>}
               {isExpanded && branchInverters.map(inv => <button style={{paddingLeft:20 + (nodeDepth(node,navigationNodes)+1) * 14}} key={inv.code} className={`node-row inverter-unit ${view.kind === "inverter" && view.inverterCode === inv.code ? "active" : ""}`} onClick={() => navigate({kind:"inverter",siteCode:"P0480",inverterCode:inv.code})}><span className="node-toggle-spacer"/><Gauge/><span>Inverter {inv.code.padStart(3,"0")}</span></button>)}
             </div>;
           })}</div>}
         </div>; })}
+        </div>)}
       </div>
     </section>
   </Sidebar>;
@@ -227,7 +230,7 @@ function Breadcrumb({ view, navigate, sites }: { view: View; navigate: Navigate;
   if (view.kind === "meter") tail = item.nodes.find(node => (node.navigationKey ?? node.id) === view.nodeId)?.name ?? "Meter";
   if (view.kind === "inverters") tail = "Inverter total";
   if (view.kind === "inverter") tail = `Inverter ${view.inverterCode}`;
-  return <><Database/><button onClick={() => navigate({kind:"portfolio"})}>Portfolio</button><ChevronRight/><button onClick={() => navigate({kind:"site",siteCode:item.code})}>{item.name}</button>{view.kind !== "site" && <><ChevronRight/><strong>{tail}</strong></>}</>;
+  return <><Database/><button onClick={() => navigate({kind:"portfolio",portfolioId:item.portfolioId})}>Portfolio</button><ChevronRight/><button onClick={() => navigate({kind:"site",siteCode:siteNavigationId(item)})}>{item.name}</button>{view.kind !== "site" && <><ChevronRight/><strong>{tail}</strong></>}</>;
 }
 
 function Topbar({ view, navigate, range, onRangeChange, sites, mode, onModeChange }: { view: View; navigate: Navigate; range: DashboardRange; onRangeChange: (range: DashboardRange) => void; sites: PortfolioSite[]; mode: SurfaceMode; onModeChange: (mode: SurfaceMode) => void }) {
@@ -443,31 +446,32 @@ function LiveDataState({ error, onRetry }: { error?: string; onRetry?: () => voi
 
 function PortfolioCard({ item, navigate }: { item: PortfolioSite; navigate: Navigate }) {
   const dailyPlan = item.annualYieldKwh / 365;
-  return <button className="portfolio-site-card" onClick={() => navigate({kind:"site",siteCode:item.code})} title={`Open contract ${item.contractId ?? ""}`}><div className="site-thumb"><SunMedium/></div><div className="site-card-copy"><strong>{item.displayName ?? contractSiteLabel(item)}</strong><span>Contract {item.contractId ?? "—"} | {num(item.capacityKwp/1000,2)}MWp | {item.guarantee}% guarantee</span><div><label>Daily yield plan<b>{num(dailyPlan,0)}<small> kWh</small></b></label><label>Contract rate<b>{item.tariff ? `R ${num(item.tariff,2)}` : "—"}</b></label></div></div><div className="site-card-status"><span>Active</span><b>{item.meterCount} meters</b><em>{item.city}</em></div></button>;
+  return <button className="portfolio-site-card" onClick={() => navigate({kind:"site",siteCode:siteNavigationId(item)})} title={`Open contract ${item.contractId ?? ""}`}><div className="site-thumb"><SunMedium/></div><div className="site-card-copy"><strong>{item.displayName ?? contractSiteLabel(item)}</strong><span>Contract {item.contractId ?? "—"} | {num(item.capacityKwp/1000,2)}MWp | {item.guarantee}% guarantee</span><div><label>Daily yield plan<b>{num(dailyPlan,0)}<small> kWh</small></b></label><label>Contract rate<b>{item.tariff ? `R ${num(item.tariff,2)}` : "—"}</b></label></div></div><div className="site-card-status"><span>Active</span><b>{item.meterCount} meters</b><em>{item.city}</em></div></button>;
 }
 
-function PortfolioView({ navigate, period, sites }: { navigate: Navigate; period: PrecoolPeriod; sites: PortfolioSite[] }) {
+function PortfolioView({ navigate, period, sites, portfolioId }: { navigate: Navigate; period: PrecoolPeriod | null; sites: PortfolioSite[]; portfolioId:string }) {
+  const portfolio = portfolios.find(p=>p.id===portfolioId) ?? portfolios[0];
   const chartVisibility = useChartSeriesVisibility();
-  const daily = periodUsesBars(period.granularity);
-  const chartUnit = periodChartUnit(period);
-  const chartData = withSitePowerTotals(period.power);
-  const resolution = periodResolutionLabel(period.granularity);
-  const dataAsOf = period.source.dataAsOf ? format(new Date(period.source.dataAsOf),"dd MMM yyyy HH:mm") : "no readings in selection";
+  const daily = period ? periodUsesBars(period.granularity) : false;
+  const chartUnit = period ? periodChartUnit(period) : "kW";
+  const chartData = period ? withSitePowerTotals(period.power) : [];
+  const resolution = period ? periodResolutionLabel(period.granularity) : "";
+  const dataAsOf = period?.source.dataAsOf ? format(new Date(period.source.dataAsOf),"dd MMM yyyy HH:mm") : "live contract catalog";
   const meterTotal = sites.reduce((sum,item) => sum + item.meterCount,0);
   const totalCapacityMwp = sites.reduce((sum,item) => sum+item.capacityKwp,0)/1000;
   const annualPlanGwh = sites.reduce((sum,item) => sum+item.annualYieldKwh,0)/1_000_000;
   const weightedGuarantee = totalCapacityMwp ? sites.reduce((sum,item) => sum+item.guarantee*item.capacityKwp,0)/(totalCapacityMwp*1000) : 0;
   const activeSystems = sites.filter(item => item.systemActive !== false && item.systemKey).length;
   const belowGuarantee = sites.filter(item => item.guarantee < 95).length;
-  return <><PageTitle title="Terradew Four" subtitle={`${sites.length} contracts | ${meterTotal} physical meters | Doris as of ${dataAsOf}`}/>
-    <div className="kpi-grid portfolio-kpis"><Kpi icon={SunMedium} label="Contracted solar capacity" value={num(totalCapacityMwp,2)} unit="MWp" note={`${sites.length} Terradew Four contracts`} tone="green"/><Kpi icon={Database} label="Annual yield plan" value={num(annualPlanGwh,2)} unit="GWh" note="sum of contract yield plans"/><Kpi icon={Check} label="Weighted guarantee" value={num(weightedGuarantee,1)} unit="%" note="weighted by installed DC capacity" tone="green"/><Kpi icon={Network} label="Physical meters" value={String(meterTotal)} note="deduplicated SLD meter mappings"/></div>
-    <div className="portfolio-overview"><article className="panel exposure"><div className="panel-head"><strong>Portfolio data coverage</strong><span>live catalog</span></div><div><Check/><span>VCOM-linked systems</span><b>{activeSystems} of {sites.length}</b></div><div><AlertTriangle/><span>Contracts below 95% guarantee</span><b>{belowGuarantee} of {sites.length}</b></div><div><Database/><span>PreCool meter coverage</span><b>{num(period.totals.meterAvailability,1)}%</b></div></article>
+  return <><PageTitle title={portfolio.name} subtitle={`${sites.length} contracts | ${meterTotal} physical meters | Doris as of ${dataAsOf}`}/>
+    <div className="kpi-grid portfolio-kpis"><Kpi icon={SunMedium} label="Contracted solar capacity" value={num(totalCapacityMwp,2)} unit="MWp" note={`${sites.length} ${portfolio.description}`} tone="green"/><Kpi icon={Database} label="Annual yield plan" value={num(annualPlanGwh,2)} unit="GWh" note="sum of contract yield plans"/><Kpi icon={Check} label="Weighted guarantee" value={num(weightedGuarantee,1)} unit="%" note="weighted by installed DC capacity" tone="green"/><Kpi icon={Network} label="Physical meters" value={String(meterTotal)} note="deduplicated SLD meter mappings"/></div>
+    {period && <div className="portfolio-overview"><article className="panel exposure"><div className="panel-head"><strong>Portfolio data coverage</strong><span>live catalog</span></div><div><Check/><span>VCOM-linked systems</span><b>{activeSystems} of {sites.length}</b></div><div><AlertTriangle/><span>Contracts below 95% guarantee</span><b>{belowGuarantee} of {sites.length}</b></div><div><Database/><span>PreCool meter coverage</span><b>{num(period.totals.meterAvailability,1)}%</b></div></article>
       <ChartPanel title="Yield, expectation and grid use | P0480 PreCool" hint={`${selectedPeriodLabel(period)} · ${resolution} · ${chartUnit}`}>
         <AggregateSupplyChart data={chartData} daily={daily} chartUnit={chartUnit} chartVisibility={chartVisibility} area expectation/>
       </ChartPanel>
-    </div>
+    </div>}
     <DisclosureSection title="Portfolio contract detail" hint="capacity, rates and operating coverage"><PortfolioContractPanels sites={sites}/></DisclosureSection>
-    <section className="all-sites"><div className="section-label"><strong>All Sites ({sites.length})</strong><span>Terradew Four contracts</span></div><div className="portfolio-sites-grid">{sites.map(item => <PortfolioCard key={item.contractId ?? item.code} item={item} navigate={navigate}/>)}</div></section>
+    <section className="all-sites"><div className="section-label"><strong>All Sites ({sites.length})</strong><span>{portfolio.description}</span></div><div className="portfolio-sites-grid">{sites.map(item => <PortfolioCard key={item.contractId ?? item.code} item={item} navigate={navigate}/>)}</div></section>
   </>;
 }
 
@@ -476,7 +480,7 @@ function NodeCard({ node, item, period, navigate }: { node: PortfolioNode; item:
   const expected = period.expectedFiveMinuteReadings*Math.max(node.meters,1);
   const coverage = snapshot && expected ? snapshot.readings/expected*100 : 0;
   const sourceLabel = node.measurementKind === "calculated" ? "Virtual calculation" : node.measurementKind === "metered" || node.isPhysical || !isVirtualTotalNode(node) ? "Metered" : "Calculated";
-  return <button className="meter-card" onClick={() => navigate({kind:"meter",siteCode:item.code,nodeId:node.navigationKey ?? node.id})}><div><NodeIcon type={node.type}/><strong>{node.name}</strong></div><span>{node.type} · {sourceLabel}</span><small>{snapshot ? `${num(snapshot.energyMwh,3)} MWh · ${num(snapshot.peakKw,1)} kW peak` : `Node ${node.id}`}</small><em className={snapshot && coverage < 99.9 ? "warning" : ""}>{snapshot ? `${num(coverage,1)}% data` : `${node.meters} source meter${node.meters === 1 ? "" : "s"}`}</em></button>;
+  return <button className="meter-card" onClick={() => navigate({kind:"meter",siteCode:siteNavigationId(item),nodeId:node.navigationKey ?? node.id})}><div><NodeIcon type={node.type}/><strong>{node.name}</strong></div><span>{node.type} · {sourceLabel}</span><small>{snapshot ? `${num(snapshot.energyMwh,3)} MWh · ${num(snapshot.peakKw,1)} kW peak` : `Node ${node.id}`}</small><em className={snapshot && coverage < 99.9 ? "warning" : ""}>{snapshot ? `${num(coverage,1)}% data` : `${node.meters} source meter${node.meters === 1 ? "" : "s"}`}</em></button>;
 }
 
 function SiteDashboardPanels({ item, period }: { item: PortfolioSite; period: PrecoolPeriod }) {
@@ -509,29 +513,6 @@ function SiteDashboardPanels({ item, period }: { item: PortfolioSite; period: Pr
 
 function SiteDashboardView({ item, period }: { item: PortfolioSite; period: PrecoolPeriod }) {
   return <><PageTitle title={item.name} subtitle={`${item.displayName ?? contractSiteLabel(item)} | Site dashboard | Contract ${item.contractId ?? "—"}`}/><CoverageNotice period={period}/><SiteDashboardPanels item={item} period={period}/></>;
-}
-
-function SiteView({ item, navigate, period }: { item: PortfolioSite; navigate: Navigate; period: PrecoolPeriod }) {
-  const chartVisibility = useChartSeriesVisibility();
-  const isPrecool = true;
-  const operationalNodes = [...new Map(item.nodes.filter(node => (node.isPhysical ?? !isVirtualTotalNode(node)) || isLoadNode(node)).map(node => [node.id,node])).values()];
-  const types = item.nodes.reduce<Record<string,number>>((acc,node) => { acc[node.type] = (acc[node.type] ?? 0) + 1; return acc; },{});
-  const daily = periodUsesBars(period.granularity);
-  const chartUnit = periodChartUnit(period);
-  const chartData = withSitePowerTotals(period.power);
-  const resolution = periodResolutionLabel(period.granularity);
-  const retainedSolarMwh = Math.max(period.totals.solarEnergyMwh-period.totals.gridExportKwh/1000,0);
-  return <><PageTitle title={item.name} subtitle={`${item.displayName ?? contractSiteLabel(item)} | Contract ${item.contractId ?? "—"} | ${num(item.capacityKwp/1000,2)}MWp | commissioned ${item.commissioned}`}/>
-    <CoverageNotice period={period}/>
-    <div className="kpi-grid meter-four-kpis"><Kpi icon={Zap} label="Solar energy" value={num(period.totals.solarEnergyMwh,3)} unit="MWh" note={selectedPeriodLabel(period)} tone="green" bars/><Kpi icon={Activity} label="Grid import" value={num(period.totals.gridImportMwh,3)} unit="MWh" note="Municipal meter register deltas" delta="metered" tone="green" bars/><Kpi icon={SunMedium} label="Solar retained on site" value={num(retainedSolarMwh,3)} unit="MWh" note="Generation less grid export" tone="green" bars/><Kpi icon={Gauge} label="Meter availability" value={num(period.totals.meterAvailability,1)} unit="%" note={`Inverters ${num(period.totals.inverterAvailability,1)}%`} delta={period.inverterCoverage !== "complete" ? "partial" : "online"} tone={period.inverterCoverage !== "complete" ? "amber" : "green"} bars/></div>
-    <div className="site-chart-row"><ChartPanel title={isPrecool ? `${daily ? "Energy" : "Power"} overview | ${chartUnit}` : "Contract yield profile (MWh)"} hint={isPrecool ? `${selectedPeriodLabel(period)} · ${resolution}` : undefined}>{isPrecool ? <AggregateSupplyChart data={chartData} daily={daily} chartUnit={chartUnit} chartVisibility={chartVisibility} area/> : <ResponsiveContainer width="100%" height="100%"><BarChart data={monthPlan(item)} margin={chartMargin}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="month" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Legend {...chartVisibility.legendProps}/><Bar dataKey="plan" name="Monthly yield plan MWh" fill="#dfe6e7" hide={chartVisibility.isHidden("plan")}/><Bar dataKey="actual" name="Contract-derived profile MWh" fill="#249b61" hide={chartVisibility.isHidden("actual")}/></BarChart></ResponsiveContainer>}</ChartPanel>
-      <article className="panel loss-list"><div className="panel-head"><strong>SLD hierarchy</strong><span>{item.nodeCount} nodes</span></div>{Object.entries(types).map(([type,count]) => <div key={type}><span>{type || "Unclassified"}</span><b>{count}</b></div>)}</article></div>
-    <section className="all-meters"><div className="section-label"><strong>Meters and loads ({operationalNodes.length})</strong><span>metered and calculated SLD nodes</span></div><div className="meter-card-grid">{operationalNodes.map(node => <NodeCard key={node.id} node={node} item={item} period={period} navigate={navigate}/>)}</div></section>
-    <DisclosureSection title="More site detail" hint="energy balance, commercial context and data lineage">
-      <div className="site-value-row"><EnergyBalancePanel period={period}/><article className="panel insight-panel"><div className="panel-head"><strong>Data lineage</strong><span>selected period</span></div><div className="source-list"><div><span>Meter energy and power</span><b>{period.source.meterSource}</b></div><div><span>Inverter telemetry</span><b>{period.source.inverterSource}</b></div><div><span>Irradiance expectation</span><b>{period.source.irradianceSource}</b></div><div><span>Resolution</span><b>{resolution}</b></div></div></article></div>
-      <SolarCommercialPanel item={item} period={period} meter={period.meters.solar} scope={`${item.name} · Solar Total`} siteWide/>
-    </DisclosureSection>
-  </>;
 }
 
 function meterSeriesKey(item: PortfolioSite, node: PortfolioNode) {
@@ -634,7 +615,6 @@ function MeterView({ item, node, navigate, period }: { item: PortfolioSite; node
   const meterSnapshot = selectedMeterSnapshot(period,key ?? "site");
   const hasLiveMeterData = Boolean(meterSnapshot);
   const liveChartData = withSitePowerTotals(period.power);
-  const planChartData = monthPlan(item);
   const selectedKey = key ?? "site";
   const selectedStotKey = stotKey(selectedKey);
   const siteTotal = selectedKey === "site";
@@ -653,7 +633,7 @@ function MeterView({ item, node, navigate, period }: { item: PortfolioSite; node
   return <><PageTitle title={node.name} subtitle={`${item.name} | ${node.type} | Device node ${node.id}`}/>
     <MeterCoverageNotice period={period} meter={meterSnapshot} node={node}/>
     <div className={`kpi-grid ${solar ? "meter-five-kpis" : "meter-four-kpis"}`}>{solar ? <><Kpi icon={Zap} label="Peak output" value={meterSnapshot ? num(meterSnapshot.peakKw,1) : "—"} unit={meterSnapshot ? "kW" : undefined} note={selectedPeriodLabel(period)} delta="peak" tone="green"/><Kpi icon={Database} label="Grid import" value={num(period.totals.gridImportMwh,3)} unit="MWh" note="municipal total"/><Kpi icon={SunMedium} label="Solar energy" value={energyValue} unit={meterSnapshot ? energyUnit : undefined} note="Solar export register delta" delta="measured" tone="green"/><Kpi icon={Gauge} label="Solcast peak GHI" value={num(period.totals.solcastPeakGhi,1)} unit="W/m²" note="Satellite irradiance" delta="peak" tone="green"/><Kpi icon={Activity} label="PPA rate exposure" value={solarRateExposure === null ? "—" : `R ${num(solarRateExposure,0)}`} note={item.tariff ? `not savings · R ${num(item.tariff,3)}/kWh` : "PPA rate unavailable"} delta="value" tone="green"/></> : <><Kpi icon={Zap} label="Peak demand" value={meterSnapshot ? num(meterSnapshot.peakKw,1) : "—"} unit={meterSnapshot ? "kW" : undefined} note={selectedPeriodLabel(period)} delta="peak" tone="green"/><Kpi icon={Database} label="Imported energy" value={energyValue} unit={meterSnapshot ? energyUnit : undefined} note="Import register delta"/><Kpi icon={Gauge} label="Meter availability" value={num(meterAvailability,1)} unit="%" note={`${meterSnapshot?.readings ?? 0} five-minute readings`} delta="metered" tone="green"/><Kpi icon={Activity} label={selectedKey === "grid" ? "Priced cost incl. VAT" : "Peak apparent demand"} value={selectedKey === "grid" ? pricedMunicipalTotal === null ? "—" : `R ${num(pricedMunicipalTotal,0)}` : meterSnapshot?.peakKva ? num(meterSnapshot.peakKva,1) : "—"} unit={selectedKey !== "grid" && meterSnapshot?.peakKva ? "kVA" : undefined} note={selectedKey === "grid" ? "canonical tariff Pricing Result" : "Stot maximum"} tone={selectedKey === "grid" && pricedMunicipalTotal !== null ? "green" : undefined}/></>}</div>
-    <ChartPanel title={daily ? "Energy profile" : siteTotal ? "Site, municipal and solar power" : solar ? "Solar and municipal power" : "Power profile"} hint={hasLiveMeterData ? `${selectedPeriodLabel(period)} · ${resolution} · ${chartUnit}` : "contract-derived monthly plan"}>
+    <ChartPanel title={daily ? "Energy profile" : siteTotal ? "Site, municipal and solar power" : solar ? "Solar and municipal power" : "Power profile"} hint={hasLiveMeterData ? `${selectedPeriodLabel(period)} · ${resolution} · ${chartUnit}` : "No meter readings in the selected period"}>
       {hasLiveMeterData && daily ? siteTotal
         ? <AggregateSupplyChart data={liveChartData} daily chartUnit={chartUnit} chartVisibility={chartVisibility}/>
         : <ResponsiveContainer width="100%" height="100%"><BarChart data={liveChartData} margin={chartMargin}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Legend {...chartVisibility.legendProps}/>{selectedKey !== "grid" && <Bar dataKey="grid" name="Municipal Total energy (MWh)" fill="#dfe5e6" hide={chartVisibility.isHidden("grid")}/>}<Bar dataKey={selectedKey} name={`${node.name} energy (MWh)`} fill={solar ? "#249b61" : "#185c68"} hide={chartVisibility.isHidden(selectedKey)}/></BarChart></ResponsiveContainer>
@@ -663,7 +643,7 @@ function MeterView({ item, node, navigate, period }: { item: PortfolioSite; node
             ? <ResponsiveContainer width="100%" height="100%"><ComposedChart data={liveChartData} margin={chartMargin}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Legend {...chartVisibility.legendProps}/><Line dataKey={selectedKey} name={`${node.name} Ptot (kW)`} stroke="#f0ad42" strokeWidth={2} dot={false} hide={chartVisibility.isHidden(selectedKey)}/><Line dataKey={selectedStotKey} name={`${node.name} Stot (kVA)`} stroke="#d28a35" strokeDasharray="5 3" dot={false} hide={chartVisibility.isHidden(selectedStotKey)}/><Line dataKey="expected" name="Solcast expectation (kW)" stroke="#ef705f" strokeDasharray="2 4" dot={false} hide={chartVisibility.isHidden("expected")}/><Line dataKey="grid" name="Municipal Total Ptot (kW)" stroke="#526f76" strokeWidth={1.4} dot={false} hide={chartVisibility.isHidden("grid")}/><Line dataKey="gridStot" name="Municipal Total Stot (kVA)" stroke="#90a3a6" strokeDasharray="5 3" dot={false} hide={chartVisibility.isHidden("gridStot")}/></ComposedChart></ResponsiveContainer>
             : hasLiveMeterData
               ? <ResponsiveContainer width="100%" height="100%"><LineChart data={liveChartData} margin={chartMargin}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Legend {...chartVisibility.legendProps}/><Line dataKey={selectedKey} name={`${node.name} Ptot (kW)`} stroke="#185c68" strokeWidth={2} dot={false} hide={chartVisibility.isHidden(selectedKey)}/><Line dataKey={selectedStotKey} name={`${node.name} Stot (kVA)`} stroke="#d26a57" strokeDasharray="5 3" dot={false} hide={chartVisibility.isHidden(selectedStotKey)}/>{selectedKey !== "grid" && <Line dataKey="grid" name="Municipal Total Ptot (kW)" stroke="#90a3a6" strokeWidth={1.2} dot={false} hide={chartVisibility.isHidden("grid")}/>} {selectedKey !== "grid" && <Line dataKey="gridStot" name="Municipal Total Stot (kVA)" stroke="#b2bfc1" strokeDasharray="5 3" dot={false} hide={chartVisibility.isHidden("gridStot")}/>}</LineChart></ResponsiveContainer>
-              : <ResponsiveContainer width="100%" height="100%"><BarChart data={planChartData} margin={chartMargin}><CartesianGrid stroke="#dbe5e6" vertical={false}/><XAxis dataKey="month" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Legend {...chartVisibility.legendProps}/><Bar dataKey="plan" name="Monthly yield plan MWh" fill="#dfe5e6" hide={chartVisibility.isHidden("plan")}/><Bar dataKey="actual" name="Contract-derived profile MWh" fill={solar ? "#249b61" : "#185c68"} hide={chartVisibility.isHidden("actual")}/></BarChart></ResponsiveContainer>}
+              : <div className="telemetry-history-empty">No meter readings were returned for this selection.</div>}
     </ChartPanel>
     {showsChildren && <section className="all-meters"><div className="section-label"><strong>{showsInverters ? "Inverters" : "Child nodes"}</strong><span>{meterId === "pvdb-1" ? "PVDB 1 · Inverters 001–006" : meterId === "pvdb-2" ? "PVDB 2 · Inverters 007–012" : item.name}</span></div>{showsInverters ? <div className="meter-card-grid">{branchInverters.map(inv => <button className="meter-card" key={inv.code} onClick={() => navigate({kind:"inverter",siteCode:"P0480",inverterCode:inv.code})}><div><Gauge/><strong>Inverter {inv.code.padStart(3,"0")}</strong></div><span>{Number(inv.code) <= 6 ? "PVDB 1" : "PVDB 2"} · {inv.model}</span><small>{inv.hasData ? `${num(inv.energy,1)} kWh` : "No VCOM data"}</small><em>{inv.hasData ? inv.availability >= 99.9 ? "Complete" : "Partial" : "Unavailable"}</em></button>)}</div> : <div className="meter-card-grid">{meterId === "solar-total" && <button className="meter-card" onClick={() => navigate({kind:"inverters",siteCode:"P0480"})}><div><Layers3/><strong>Inverter total</strong></div><span>12 Sungrow units</span><small>{period.totals.inverterReadings ? `${num(period.totals.inverterEnergyMwh,3)} MWh` : "No VCOM data"}</small><em>Open</em></button>}{connected.map(value => <NodeCard key={value.id} node={value} item={item} period={period} navigate={navigate}/>)}</div>}</section>}
     {selectedKey === "grid" ? <DisclosureSection title="Tariff cost breakdown" hint="charge composition and largest tariff lines"><MunicipalFinancialPanel period={period}/></DisclosureSection> : solar ? <DisclosureSection title="Solar commercial detail" hint="meter contribution, PPA context and specific yield"><SolarCommercialPanel item={item} period={period} meter={meterSnapshot} scope={`${item.name} · ${node.name}`} siteWide={selectedKey === "solar"}/></DisclosureSection> : siteTotal ? <DisclosureSection title="Site energy balance" hint="solar retained, municipal contribution and export"><section className="context-section"><EnergyBalancePanel period={period}/></section></DisclosureSection> : <MeterOperatingPanel node={node} meter={meterSnapshot} period={period}/>}
@@ -860,6 +840,10 @@ export function MockEnergyDashboard() {
   const [retry, setRetry] = useState(0);
   const sites = useMemo(() => catalogState?.sites ?? [],[catalogState]);
   const item = selectedSite(view,sites);
+  const portfolioId = view.kind === "portfolio" ? view.portfolioId ?? "terradew-four" : item.portfolioId ?? "terradew-four";
+  const visiblePortfolioSites = sitesForPortfolio(sites,portfolioId);
+  const isContractPerformance = view.kind === "site" && surfaceMode === "performance";
+  const needsOperationalData = !isContractPerformance && !(view.kind === "portfolio" && portfolioId === "redefine-properties");
   const node = view.kind === "meter" ? item.nodes.find(value => (value.navigationKey ?? value.id) === view.nodeId) ?? item.nodes[0] : undefined;
   const from = format(range.from ?? anchorDate,"yyyy-MM-dd");
   const to = format(range.to ?? range.from ?? anchorDate,"yyyy-MM-dd");
@@ -891,7 +875,7 @@ export function MockEnergyDashboard() {
   },[retry]);
 
   useEffect(() => {
-    if (!item.contractId) return;
+    if (!item.contractId || !needsOperationalData) return;
     const controller = new AbortController();
     void fetch(appRoute(`/api/site?contract_id=${encodeURIComponent(item.contractId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&from_time=${encodeURIComponent(fromTime)}&to_time=${encodeURIComponent(toTime)}`), {cache:"no-store",signal:controller.signal})
       .then(async response => {
@@ -904,7 +888,7 @@ export function MockEnergyDashboard() {
         setDataState({key:requestKey,dataset:null,error:error instanceof Error ? error.message : "Unable to load Doris data."});
       });
     return () => controller.abort();
-  },[from,to,fromTime,toTime,item.contractId,requestKey]);
+  },[from,to,fromTime,toTime,item.contractId,requestKey,needsOperationalData]);
 
   useEffect(() => {
     if (view.kind !== "inverter" || !telemetryRequestKey) return;
@@ -926,17 +910,18 @@ export function MockEnergyDashboard() {
     const context = (document as Document & { modelContext?: { registerTool: (tool: unknown, options?: { signal?: AbortSignal }) => void | Promise<void> } }).modelContext;
     if (!context?.registerTool) return;
     const lifecycle = new AbortController();
-    const registration = context.registerTool({ name:"navigate_energy_asset_view", title:"Open energy asset view", description:"Navigate to the portfolio, a Terradew Four contract site, meter, PreCool inverter total, or PreCool inverter unit.", inputSchema:{type:"object",properties:{view:{type:"string"},site_code:{type:"string"},node_id:{type:"string"}},required:["view"],additionalProperties:false}, annotations:{readOnlyHint:true,untrustedContentHint:false}, execute(input:unknown){ const value=input as {view?:string;site_code?:string;node_id?:string}; if(value.view==="portfolio"){setView({kind:"portfolio"});return {view:"portfolio"};} const candidate=sites.find(entry=>entry.code===value.site_code)??sites.find(entry=>entry.code==="P0480"); if(!candidate) throw new Error("Contract catalog has not loaded"); if(value.view==="site"){setView({kind:"site",siteCode:candidate.code});return {view:"site",site:candidate.code};} if(value.view==="meter"&&value.node_id){setView({kind:"meter",siteCode:candidate.code,nodeId:value.node_id});return {view:"meter",site:candidate.code,node:value.node_id};} if(value.view==="inverters"){setView({kind:"inverters",siteCode:"P0480"});return {view:"inverters"};} if(value.view==="inverter"){setView({kind:"inverter",siteCode:"P0480",inverterCode:"01"});return {view:"inverter",code:"01"};} throw new Error("Unsupported view"); } },{signal:lifecycle.signal});
+    const registration = context.registerTool({ name:"navigate_energy_asset_view", title:"Open energy asset view", description:"Navigate to the portfolio, a portfolio contract site, meter, PreCool inverter total, or PreCool inverter unit.", inputSchema:{type:"object",properties:{view:{type:"string"},site_code:{type:"string"},node_id:{type:"string"}},required:["view"],additionalProperties:false}, annotations:{readOnlyHint:true,untrustedContentHint:false}, execute(input:unknown){ const value=input as {view?:string;site_code?:string;node_id?:string}; if(value.view==="portfolio"){setView({kind:"portfolio"});return {view:"portfolio"};} const candidate=sites.find(entry=>entry.code===value.site_code)??sites.find(entry=>entry.code==="P0480"); if(!candidate) throw new Error("Contract catalog has not loaded"); if(value.view==="site"){setView({kind:"site",siteCode:siteNavigationId(candidate)});return {view:"site",site:candidate.code};} if(value.view==="meter"&&value.node_id){setView({kind:"meter",siteCode:siteNavigationId(candidate),nodeId:value.node_id});return {view:"meter",site:candidate.code,node:value.node_id};} if(value.view==="inverters"){setView({kind:"inverters",siteCode:"P0480"});return {view:"inverters"};} if(value.view==="inverter"){setView({kind:"inverter",siteCode:"P0480",inverterCode:"01"});return {view:"inverter",code:"01"};} throw new Error("Unsupported view"); } },{signal:lifecycle.signal});
     void Promise.resolve(registration).catch(()=>undefined); return () => lifecycle.abort();
   },[sites]);
 
   const catalogError = catalogState?.error;
   return <SidebarProvider defaultOpen style={{"--sidebar-width":"280px","--sidebar-width-icon":"48px"} as React.CSSProperties}><NavigationSidebar view={view} navigate={setView} sites={sites}/><SidebarInset className="application-main"><Topbar view={view} navigate={setView} range={range} onRangeChange={setRange} sites={sites} mode={surfaceMode} onModeChange={setSurfaceMode}/><main className="content-area">
-    {(!catalogState || (sites.length > 0 && loading)) && <LiveDataState/>}
+    {(!catalogState || (sites.length > 0 && loading && needsOperationalData)) && <LiveDataState/>}
     {catalogError && <LiveDataState error={catalogError} onRetry={() => setRetry(value => value + 1)}/>}
-    {!catalogError && !loading && dataError && <LiveDataState error={dataError} onRetry={() => setRetry(value => value + 1)}/>}
-    {period && view.kind === "portfolio" && <PortfolioView navigate={setView} period={period} sites={sites}/>}
-    {period && view.kind === "site" && (surfaceMode === "dashboard" ? <SiteDashboardView item={item} period={period}/> : <SiteView item={item} navigate={setView} period={period}/>)}
+    {needsOperationalData && !catalogError && !loading && dataError && <LiveDataState error={dataError} onRetry={() => setRetry(value => value + 1)}/>}
+    {catalogState && !catalogError && view.kind === "portfolio" && <PortfolioView navigate={setView} period={portfolioId === "terradew-four" ? period : null} sites={visiblePortfolioSites} portfolioId={portfolioId}/>}
+    {catalogState && !catalogError && isContractPerformance && item.contractId && <SiteContractPerformance site={item} from={from} to={to} fromTime={fromTime} toTime={toTime} onOpenNode={nodeId=>setView({kind:"meter",siteCode:siteNavigationId(item),nodeId})}/>}
+    {period && view.kind === "site" && surfaceMode === "dashboard" && <SiteDashboardView item={item} period={period}/>}
     {period && view.kind === "meter" && node && (surfaceMode === "dashboard" ? <MeterDashboardView item={item} node={node} period={period}/> : <MeterView item={item} node={node} navigate={setView} period={period}/>)}
     {period && view.kind === "inverters" && <InverterTotalView navigate={setView} period={period}/>}
     {period && view.kind === "inverter" && <SingleInverterView code={view.inverterCode} period={period} history={telemetryHistory} historyLoading={telemetryLoading} historyError={telemetryError}/>}

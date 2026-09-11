@@ -17,6 +17,15 @@ export type PortfolioSite = {
   siteId?: string;
   phaseNumber?: string;
   providerName?: string;
+  portfolioId?: string;
+  accountId?: string;
+  accountName?: string;
+  contractType?: string;
+  cocoDate?: string | null;
+  degradationPercent?: number | null;
+  simulatedPrPercent?: number | null;
+  guaranteedPrPercent?: number | null;
+  performanceBasedOnYields?: boolean | null;
   displayName?: string;
   code: string;
   name: string;
@@ -37,6 +46,19 @@ export type PortfolioSite = {
 };
 
 const n = (id: string, parentId: string | undefined, name: string, type: string, meters = 1): PortfolioNode => ({ id, parentId, name, type, meters });
+
+export const portfolios = [
+  {id:"terradew-four", name:"Terradew Four", description:"Provider · BOO contracts"},
+  {id:"redefine-properties", name:"Redefine Properties", description:"Account · EPC contracts"},
+];
+
+export function siteNavigationId(item: Pick<PortfolioSite,"code"|"contractId">) {
+  return item.contractId ? `${item.code}:${item.contractId}` : item.code;
+}
+
+export function sitesForPortfolio(sites: PortfolioSite[], portfolioId: string) {
+  return sites.filter(item => (item.portfolioId ?? "terradew-four") === portfolioId);
+}
 
 export type PortfolioNavigationNode = PortfolioNode & { navigationKey: string };
 

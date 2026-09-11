@@ -58,7 +58,8 @@ test("meter power charts expose Ptot and Stot for site, municipal, and solar tot
 
 test("load totals and virtual load nodes retain real Ptot and Stot series", () => {
   assert.match(component,/key === "load"/);
-  assert.match(component,/Meters and loads/);
+  const performance = readFileSync(new URL("components/site-contract-performance.tsx", root), "utf8");
+  assert.match(performance,/Meters and loads/);
   assert.match(contractsApi,/point\["load"\]/);
   assert.match(contractsApi,/point\["loadStot"\]/);
   assert.match(contractsApi,/measurementKind.*calculated/);

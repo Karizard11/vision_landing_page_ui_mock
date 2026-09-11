@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "../vendor/shadcn-tailwind-4.13.0.css";
+@import "./contract-performance.css";
 
 .top-actions .date-navigation{flex:0 0 auto;min-width:352px}
 .top-actions .date-button{width:352px!important;min-width:352px!important;max-width:352px!important;height:41px!important;flex-wrap:nowrap!important;overflow:hidden;padding:0 13px!important;border-radius:4px!important;font-size:12px!important}

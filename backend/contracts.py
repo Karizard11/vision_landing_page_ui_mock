@@ -9,6 +9,10 @@ from time_context import doris_utc_to_sast, sast_bucket_datetime
 
 
 PROVIDER_NAME = "Terradew Four"
+PORTFOLIOS = [
+    {"id": "terradew-four", "name": "Terradew Four", "scope": "provider"},
+    {"id": "redefine-properties", "name": "Redefine Properties", "scope": "account", "contractType": "epc"},
+]
 EXPECTED_READINGS_PER_DAY = 288
 
 
@@ -258,6 +262,8 @@ def query_contract_catalog(connection) -> list[dict[str, Any]]:
             """
             SELECT DISTINCT c.contract_id, c.contract_phase, c.site_id, c.site_name,
                    c.project_code, c.provider_name, c.practical_completion_date,
+                   c.account_id, c.account_name, c.contract_type, c.coco_date, c.degradation,
+                   c.simulated_performance_ratio, c.guaranteed_pr_ratio, c.performance_based_on_yields,
                    c.current_ppa_rate, c.yield_guarantee, c.system_size_kwp,
                    c.system_yield_kwh_year, c.solar_total_device_node_id,
                    c.municipal_total_device_node_id, c.load_device_node_id,
@@ -269,8 +275,8 @@ def query_contract_catalog(connection) -> list[dict[str, Any]]:
               ON bridge.device_node_id = c.bluelog_total_node_id
             LEFT JOIN vcom_systems systems
               ON systems.system_key = bridge.system_key
-            WHERE c.provider_name = %s
-              AND c.contract_type_id = 2
+            WHERE ((c.provider_name = %s AND c.contract_type_id = 2)
+                   OR (c.account_id = 110 AND LOWER(c.contract_type) = 'epc'))
               AND c.project_code IS NOT NULL
             ORDER BY c.project_code, c.contract_phase, c.contract_id
             """,
@@ -325,7 +331,12 @@ def query_contract_catalog(connection) -> list[dict[str, Any]]:
             role_lookup[_identifier(row.get("device_node_id"))].add(_text(row.get("meter_serial")))
 
     sites: list[dict[str, Any]] = []
+    seen_contracts: set[str] = set()
     for row in contracts:
+        contract_id = _identifier(row.get("contract_id"))
+        if contract_id in seen_contracts:
+            continue
+        seen_contracts.add(contract_id)
         role_serials = {
             "solar": sorted(role_lookup[_identifier(row.get("solar_total_device_node_id"))]),
             "municipal": sorted(role_lookup[_identifier(row.get("municipal_total_device_node_id"))]),
@@ -339,6 +350,15 @@ def query_contract_catalog(connection) -> list[dict[str, Any]]:
         commissioned = row.get("practical_completion_date") or row.get("commission_date")
         sites.append({
             "contractId": _identifier(row.get("contract_id")),
+            "portfolioId": "redefine-properties" if _identifier(row.get("account_id")) == "110" and _text(row.get("contract_type")).lower() == "epc" else "terradew-four",
+            "accountId": _identifier(row.get("account_id")),
+            "accountName": _text(row.get("account_name")),
+            "contractType": _text(row.get("contract_type")),
+            "cocoDate": row["coco_date"].isoformat() if row.get("coco_date") else None,
+            "degradationPercent": _optional_number(row.get("degradation")),
+            "simulatedPrPercent": _optional_number(row.get("simulated_performance_ratio")),
+            "guaranteedPrPercent": _optional_number(row.get("guaranteed_pr_ratio")),
+            "performanceBasedOnYields": bool(row.get("performance_based_on_yields")) if row.get("performance_based_on_yields") is not None else None,
             "siteId": _identifier(row.get("site_id")),
             "phaseNumber": _text(row.get("contract_phase")) or None,
             "providerName": _text(row.get("provider_name")),

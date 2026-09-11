@@ -13,11 +13,13 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
 from contracts import (
+    PORTFOLIOS,
     aggregate_contract_payload,
     query_contract_catalog,
     query_contract_source,
 )
 from reporting_financials import load_municipal_financials
+from contract_performance import query_performance_sources, build_contract_performance
 from time_context import SAST, QueryWindow, build_query_window, doris_utc_to_sast, sast_bucket_datetime
 
 
@@ -1044,13 +1046,13 @@ def contracts():
     try:
         with doris_connection() as connection:
             sites = query_contract_catalog(connection)
-        response = jsonify({"provider": "Terradew Four", "sites": sites})
+        response = jsonify({"provider": "Terradew Four", "portfolios": PORTFOLIOS, "sites": sites})
         response.headers["Cache-Control"] = "private, max-age=300"
         return response
     except RuntimeError as error:
         return jsonify({"error": str(error)}), 503
     except Exception:
-        app.logger.exception("Terradew Four contract catalog query failed")
+        app.logger.exception("Contract catalog query failed")
         return jsonify({"error": "Unable to query the contract catalog from Doris."}), 500
 
 
@@ -1065,7 +1067,7 @@ def contract_site():
             sites = query_contract_catalog(connection)
             site = next((item for item in sites if item["contractId"] == contract_id), None)
             if not site:
-                raise ValueError("contract_id is not a Terradew Four solar contract")
+                raise ValueError("contract_id is not in an available portfolio")
             source = query_contract_source(
                 connection,
                 site,
@@ -1101,6 +1103,29 @@ def contract_site():
     except Exception:
         app.logger.exception("Contract site Doris query failed")
         return jsonify({"error": "Unable to query site data from Doris."}), 500
+
+
+@app.get("/api/site/performance")
+def contract_performance():
+    try:
+        window = parse_range()
+        contract_id = request.args.get("contract_id", "")
+        if not re.fullmatch(r"\d+", contract_id):
+            raise ValueError("contract_id must be numeric")
+        with doris_connection() as connection:
+            sites = query_contract_catalog(connection)
+            site = next((item for item in sites if item["contractId"] == contract_id), None)
+            if not site:
+                return jsonify({"error": "Contract is not in an available portfolio."}), 404
+            source = query_performance_sources(connection, site, window)
+        response = jsonify(build_contract_performance(site, window, source))
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception:
+        app.logger.exception("Contract performance query failed")
+        return jsonify({"error": "Unable to load contract performance from Doris."}), 503
 
 
 @app.get("/api/precool")
