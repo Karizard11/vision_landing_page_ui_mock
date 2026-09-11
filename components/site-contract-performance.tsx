@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, CalendarDays, Database, SunMedium } from "lucide-react";
+import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, CalendarDays, Database, Gauge, SunMedium } from "lucide-react";
 import { Area, Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { isLoadNode, contractSiteLabel, type PortfolioSite } from "@/lib/portfolio-data";
+import type { PrecoolPeriod } from "@/lib/precool-period";
+import { municipalSummaryMeterCount, siteOperationalSummary } from "@/lib/site-summary";
 import { periodResolutionLabel, periodUsesBars, type PeriodGranularity } from "@/lib/period-resolution";
 
 type Point = {time:string; [key:string]:string|number|null};
@@ -56,8 +58,26 @@ function ComparisonChart({title,note,data,series,bars,unit,ratio=false}:{
   </article>;
 }
 
-export function SiteContractPerformance({site,from,to,fromTime,toTime,onOpenNode}:{
-  site:PortfolioSite;from:string;to:string;fromTime:string;toTime:string;onOpenNode:(key:string)=>void;
+function SiteOperationalCards({site,period,loading,error,onRetry}:{
+  site:PortfolioSite;period:PrecoolPeriod|null;loading:boolean;error:string|null;onRetry:()=>void;
+}) {
+  const municipalCount=municipalSummaryMeterCount(site);
+  const values=siteOperationalSummary(period,municipalCount);
+  const unavailable=loading?"Loading meter summary…":error?"Meter summary unavailable":"No readings in selection";
+  return <section className="site-operational-summary" aria-label="Site operations summary" aria-busy={loading}>
+    <div className="contract-kpis site-operational-kpis">
+      <article><span><Activity/>Grid import</span><strong>{fmt(values?.gridImportMwh,3)}<small> MWh</small></strong><p>{!values?unavailable:!municipalCount?"No municipal meter mapped":values.gridImportMwh==null?"No municipal register readings":`Municipal meters · ${fmt(values.gridCoverage)}% coverage`}</p></article>
+      <article><span><SunMedium/>Solar retained on site</span><strong>{fmt(values?.retainedSolarMwh,3)}<small> MWh</small></strong><p>{!values?unavailable:values.retainedSolarMwh==null?"Requires complete solar and grid readings":"Meter generation less grid export"}</p></article>
+      <article><span><Gauge/>Meter availability</span><strong>{fmt(site.meterCount>0?values?.meterAvailability:null)}<small> %</small></strong><p>{!values?unavailable:!site.meterCount?"No meters mapped":site.systemKey?`Selected period · inverters ${fmt(values.inverterAvailability)}%`:"Selected period · metered readings"}</p></article>
+    </div>
+    {error&&<div className="site-summary-error" role="status"><span>{error}</span><button onClick={onRetry}>Retry summary</button></div>}
+  </section>;
+}
+
+export function SiteContractPerformance({site,from,to,fromTime,toTime,operationalPeriod,operationsLoading,operationsError,onRetryOperations,onOpenNode}:{
+  site:PortfolioSite;from:string;to:string;fromTime:string;toTime:string;
+  operationalPeriod:PrecoolPeriod|null;operationsLoading:boolean;operationsError:string|null;onRetryOperations:()=>void;
+  onOpenNode:(key:string)=>void;
 }) {
   const [retry,setRetry]=useState(0);
   const key=[site.contractId,from,to,fromTime,toTime,retry].join(":");
@@ -84,13 +104,14 @@ export function SiteContractPerformance({site,from,to,fromTime,toTime,onOpenNode
   const operationalNodes=[...new Map(site.nodes.filter(n=>n.isPhysical || isLoadNode(n)).map(n=>[n.id,n])).values()];
   return <section className="contract-performance">
     <div className="contract-page-title"><div><span className="contract-eyebrow">Contract performance</span><h1>{site.name}</h1><p>{contractSiteLabel(site)} · {site.contractType?.toUpperCase()??"Solar"} · Contract {site.contractId}</p></div><div className="contract-period"><CalendarDays size={15}/><span>{selectedPeriod}</span></div></div>
-    {!data?<div className="live-data-state" role="status"><Database/><strong>{error??"Loading contract predictions and actual performance"}</strong><span>{error?"Please retry the selected period.":"PVModel · PVSOL · solar meters · Solcast"}</span>{error&&<button onClick={()=>setRetry(n=>n+1)}>Retry</button>}</div>:<>
-      <div className="contract-kpis">
+    {data&&<><div className="contract-kpis">
         <article><span><SunMedium/>Predicted energy</span><strong>{fmt(s!.predictedKwh)}<small> kWh</small></strong><p>Contract model · degradation applied</p></article>
-        <article><span><Activity/>Actual energy</span><strong>{fmt(s!.actualKwh)}<small> kWh</small></strong><p>Solar meters · {fmt(s!.actualCoverage)}% coverage</p></article>
+        <article><span><Activity/>Solar generation</span><strong>{fmt(s!.actualKwh)}<small> kWh</small></strong><p>Solar meters · {fmt(s!.actualCoverage)}% coverage</p></article>
         <article><span><SunMedium/>Model attainment</span><strong className={s!.attainmentPercent==null?"":s!.attainmentPercent>=100?"positive":"negative"}>{fmt(s!.attainmentPercent)}<small> %</small></strong><p>Matched intervals · {fmt(s!.comparisonCoverage)}% of selection</p></article>
         <article><span>{(s!.varianceKwh??0)>=0?<ArrowUpRight/>:<ArrowDownRight/>}Energy variance</span><strong className={s!.varianceKwh==null?"":s!.varianceKwh>=0?"positive":"negative"}>{s!.varianceKwh!=null&&s!.varianceKwh>0?"+":""}{fmt(s!.varianceKwh)}<small> kWh</small></strong><p>Actual less predicted · matched intervals</p></article>
-      </div>
+      </div></>}
+    <SiteOperationalCards site={site} period={operationalPeriod} loading={operationsLoading} error={operationsError} onRetry={onRetryOperations}/>
+    {!data?<div className="live-data-state" role="status"><Database/><strong>{error??"Loading contract predictions and actual performance"}</strong><span>{error?"Please retry the selected period.":"PVModel · PVSOL · solar meters · Solcast"}</span>{error&&<button onClick={()=>setRetry(n=>n+1)}>Retry</button>}</div>:<>
       <div className="contract-readout"><div><strong>{s!.attainmentPercent==null?"A comparison is not available for this selection.":s!.attainmentPercent>=100?`Production is ${fmt(s!.attainmentPercent-100)}% above the contract model.`:`Production is ${fmt(100-s!.attainmentPercent)}% below the contract model.`}</strong><p>{s!.comparisonCoverage<99.9?"This result covers the intervals with both meter readings and predictions.":"This result covers the complete selected period."} Weather and PR comparisons below add context.</p></div><span className={s!.predictionCoverage>=99.9&&s!.actualCoverage>=99.9?"":"partial"}>{s!.predictionCoverage>=99.9&&s!.actualCoverage>=99.9?"Complete comparison":"Partial comparison"}</span></div>
       <ComparisonChart title="Contract prediction versus actual energy" note={resolution+" intervals · model source is hourly"} data={data.series} bars={bars} unit="kWh" series={[
         {key:"predicted",name:"Contract prediction",color:"#124e5a"},

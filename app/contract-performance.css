@@ -48,3 +48,12 @@
 @media(min-width:1600px){.contract-performance>.contract-chart .contract-plot{height:350px}}
 @media(max-width:1100px){.contract-page-title{align-items:flex-start;flex-direction:column;gap:10px}.contract-facts{grid-template-columns:repeat(3,minmax(0,1fr))}.contract-kpis{gap:8px}.contract-kpis article{padding:14px 12px}.contract-kpis strong{font-size:24px}}
 @media(max-width:760px){.contract-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.contract-comparison-grid{grid-template-columns:1fr}.contract-readout{align-items:flex-start;flex-direction:column;gap:10px}.contract-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.contract-detail summary small{display:block;margin:6px 0 0}.contract-page-title h1{font-size:20px}.contract-plot{height:250px}}
+
+.site-operational-summary{display:flex;flex-direction:column;gap:8px}
+.site-operational-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
+.site-operational-kpis article{padding:12px 18px;background:#f8fafa}
+.site-operational-kpis strong{font-size:23px;margin-top:8px}
+.site-operational-kpis p{font-size:12px;margin-top:6px}
+.site-summary-error{display:flex;justify-content:space-between;align-items:center;gap:12px;color:#896321;font-size:12px}
+.site-summary-error button{border:1px solid var(--border);border-radius:4px;background:var(--card);padding:6px 10px;cursor:pointer;white-space:nowrap}
+@media(max-width:760px){.site-operational-kpis{grid-template-columns:1fr}.site-summary-error{align-items:flex-start;flex-direction:column}.site-operational-kpis article{padding:12px 14px}}

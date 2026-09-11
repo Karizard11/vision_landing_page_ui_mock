@@ -843,7 +843,7 @@ export function MockEnergyDashboard() {
   const portfolioId = view.kind === "portfolio" ? view.portfolioId ?? "terradew-four" : item.portfolioId ?? "terradew-four";
   const visiblePortfolioSites = sitesForPortfolio(sites,portfolioId);
   const isContractPerformance = view.kind === "site" && surfaceMode === "performance";
-  const needsOperationalData = !isContractPerformance && !(view.kind === "portfolio" && portfolioId === "redefine-properties");
+  const needsOperationalData = !(view.kind === "portfolio" && portfolioId === "redefine-properties");
   const node = view.kind === "meter" ? item.nodes.find(value => (value.navigationKey ?? value.id) === view.nodeId) ?? item.nodes[0] : undefined;
   const from = format(range.from ?? anchorDate,"yyyy-MM-dd");
   const to = format(range.to ?? range.from ?? anchorDate,"yyyy-MM-dd");
@@ -916,11 +916,11 @@ export function MockEnergyDashboard() {
 
   const catalogError = catalogState?.error;
   return <SidebarProvider defaultOpen style={{"--sidebar-width":"280px","--sidebar-width-icon":"48px"} as React.CSSProperties}><NavigationSidebar view={view} navigate={setView} sites={sites}/><SidebarInset className="application-main"><Topbar view={view} navigate={setView} range={range} onRangeChange={setRange} sites={sites} mode={surfaceMode} onModeChange={setSurfaceMode}/><main className="content-area">
-    {(!catalogState || (sites.length > 0 && loading && needsOperationalData)) && <LiveDataState/>}
+    {(!catalogState || (sites.length > 0 && loading && needsOperationalData && !isContractPerformance)) && <LiveDataState/>}
     {catalogError && <LiveDataState error={catalogError} onRetry={() => setRetry(value => value + 1)}/>}
-    {needsOperationalData && !catalogError && !loading && dataError && <LiveDataState error={dataError} onRetry={() => setRetry(value => value + 1)}/>}
+    {needsOperationalData && !isContractPerformance && !catalogError && !loading && dataError && <LiveDataState error={dataError} onRetry={() => setRetry(value => value + 1)}/>}
     {catalogState && !catalogError && view.kind === "portfolio" && <PortfolioView navigate={setView} period={portfolioId === "terradew-four" ? period : null} sites={visiblePortfolioSites} portfolioId={portfolioId}/>}
-    {catalogState && !catalogError && isContractPerformance && item.contractId && <SiteContractPerformance site={item} from={from} to={to} fromTime={fromTime} toTime={toTime} onOpenNode={nodeId=>setView({kind:"meter",siteCode:siteNavigationId(item),nodeId})}/>}
+    {catalogState && !catalogError && isContractPerformance && item.contractId && <SiteContractPerformance site={item} from={from} to={to} fromTime={fromTime} toTime={toTime} operationalPeriod={period} operationsLoading={loading} operationsError={dataError} onRetryOperations={() => setRetry(value => value + 1)} onOpenNode={nodeId=>setView({kind:"meter",siteCode:siteNavigationId(item),nodeId})}/>}
     {period && view.kind === "site" && surfaceMode === "dashboard" && <SiteDashboardView item={item} period={period}/>}
     {period && view.kind === "meter" && node && (surfaceMode === "dashboard" ? <MeterDashboardView item={item} node={node} period={period}/> : <MeterView item={item} node={node} navigate={setView} period={period}/>)}
     {period && view.kind === "inverters" && <InverterTotalView navigate={setView} period={period}/>}
